@@ -37,7 +37,6 @@ TARGET_RATIO = 4.0
 RATIO_TOLERANCE = 0.05
 MAX_BYTES = 50_000  # deliberately conservative; override with --max-bytes if needed
 DENSITY_LOSS_LIMIT = 0.30
-FRAGMENT_GROWTH_RATIO = 1.5
 
 
 @dataclass
@@ -165,7 +164,8 @@ def evaluate(name: str, output: Path, raw_mask: np.ndarray, raw_box: tuple[int, 
     raw_density, raw_components = mask_stats(raw_mask[y0:y1, x0:x1])
     output_density, output_components = mask_stats(ink)
     density_ok = raw_density > 0 and output_density >= raw_density * (1 - DENSITY_LOSS_LIMIT)
-    fragments_ok = output_components <= max(raw_components + 2, round(raw_components * FRAGMENT_GROWTH_RATIO))
+    # Any additional component means a formerly continuous trace was broken.
+    fragments_ok = output_components <= raw_components
     # Valid stroke requires solid dark detail plus density and continuity fidelity.
     stroke_ok = bool(ink.sum() >= 20 and arr.min() <= 40 and density_ok and fragments_ok)
     checks = [background_ok, dimensions_ok, fmt_ok, weight_ok, stroke_ok]
