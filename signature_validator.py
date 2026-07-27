@@ -360,7 +360,9 @@ def main() -> int:
     if not args.input.is_dir():
         print(f"ERROR: input folder does not exist: {args.input}", file=sys.stderr)
         return 2
-    candidates = sorted(p for p in args.input.iterdir() if p.is_file())
+    # Repository placeholder files (for example `.gitkeep`) are not submitted
+    # signatures and must not appear as failed sample results.
+    candidates = sorted(p for p in args.input.iterdir() if p.is_file() and not p.name.startswith("."))
     files = [p for p in candidates if p.suffix.lower() in SUPPORTED]
     rows = process_files(files, args.output, args.margin, args.max_bytes)
     # Never silently omit a supplied file: unsupported source formats stay visible.
