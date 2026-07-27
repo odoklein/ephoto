@@ -29,8 +29,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/api/process")
-async def process_signature(file: UploadFile = File(...)) -> dict:
+async def process_upload(file: UploadFile) -> dict:
     filename = Path(file.filename or "signature").name
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED:
@@ -54,6 +53,31 @@ async def process_signature(file: UploadFile = File(...)) -> dict:
             row["cleaned_data_url"] = "data:image/png;base64," + base64.b64encode(cleaned).decode("ascii")
             row["output_file"] = ""
         return row
+
+
+@app.post("/api/process")
+async def process_signature(file: UploadFile = File(...)) -> dict:
+    return await process_upload(file)
+
+
+@app.post("/api/process-batch")
+async def process_batch(files: list[UploadFile] = File(...)) -> dict[str, list[dict]]:
+    if not files:
+        raise HTTPException(422, "Aucun fichier reçu.")
+    if len(files) > 20:
+        raise HTTPException(422, "Sélectionnez au maximum 20 fichiers.")
+    rows: list[dict] = []
+    for file in files:
+        try:
+            rows.append(await process_upload(file))
+        except HTTPException as error:
+            rows.append({
+                "filename": Path(file.filename or "signature").name,
+                "background_clean": "fail", "dimensions_ok": "fail", "format_ok": "fail",
+                "weight_ok": "fail", "stroke_quality": "fail", "global_score": 0,
+                "failures": error.detail, "output_file": "", "cleaned_data_url": "",
+            })
+    return {"rows": rows}
 
 
 # The same container serves the UI, its reports, and the true Python API.

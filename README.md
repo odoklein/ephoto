@@ -28,6 +28,11 @@ sur le serveur avec `signature_validator.py`, OpenCV et Pillow. Les fichiers upl
 sont stockés dans un dossier temporaire, supprimé dès que la réponse PNG/JSON est
 renvoyée.
 
+L’interface accepte jusqu’à 20 images à la fois. Chaque image est traitée par le
+pipeline Python et le navigateur affiche immédiatement les cartes avant/après, les
+cinq contrôles et le score du nouveau lot. Les résultats d’upload ne sont pas ajoutés
+aux dossiers publics `input/`, `output/` ou `reports/`.
+
 1. Poussez ce dépôt sur GitHub.
 2. Dans Dokploy, créez un service **Docker Compose** connecté au dépôt et à la branche
    `main`.
