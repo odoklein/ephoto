@@ -1,0 +1,8 @@
+opencv-python-headless>=4.8
+numpy>=1.24
+Pillow>=10.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.12
+# BioGaze is not published on PyPI. Install it from the vendor-provided wheel or
+# private package index, then use --require-biogaze to enforce its availability.

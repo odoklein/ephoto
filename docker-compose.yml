@@ -1,0 +1,10 @@
+services:
+  signature-check:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - TZ=Europe/Paris
