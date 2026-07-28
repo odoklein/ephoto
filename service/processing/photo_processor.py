@@ -51,9 +51,13 @@ TILT_MAX_DEG = 5.0
 CROWN_EXTENSION = 0.28
 EYE_ASPECT_OPEN = 0.19  # eye aspect ratio below this reads as a closed or blinking eye
 MOUTH_GAP_MAX = 0.15  # inner lip gap over mouth width
-BACKGROUND_STD_MAX, BACKGROUND_MIN_LEVEL = 16.0, 120.0
+# Calibrated on the sample photographs: a studio grey with a soft vignette measures ~23,
+# a textured wall or a bedsheet 30 to 58. Revisit both figures as the sample grows.
+BACKGROUND_STD_MAX, BACKGROUND_MIN_LEVEL = 25.0, 130.0
 SHARPNESS_MIN = 45.0
-PADDING_LIMIT = 0.04  # share of the crop that may be invented when the source is tight
+# Share of the crop that may be invented when the source is framed too tightly. Kept
+# low: replicated pixels stay visible, and an ANTS agent reads them as a background flaw.
+PADDING_LIMIT = 0.02
 UNIFORM_BACKGROUND = (242, 242, 242)  # light neutral grey, accepted by ANTS
 
 # MediaPipe Face Mesh indices (468-point topology).
@@ -220,9 +224,12 @@ def _cascade_geometry(image: np.ndarray) -> FaceGeometry | None:
     if len(faces) == 0:
         return None
     x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
+    # Haar fires on random texture: only a detection comparable in size to the subject
+    # counts as a second person, otherwise a patterned background raises a false alarm.
+    companions = sum(1 for face in faces if face[2] * face[3] >= 0.40 * w * h)
     # The frontal cascade box runs from mid-forehead to about the chin; the crown guess
     # is deliberately generous because refine_crown() measures it properly afterwards.
-    chin_y = y + 0.94 * h
+    chin_y = y + 0.98 * h
     crown_y = y - 0.35 * h
 
     eye_detector = _cascade("haarcascade_eye.xml")
@@ -246,7 +253,7 @@ def _cascade_geometry(image: np.ndarray) -> FaceGeometry | None:
 
     return FaceGeometry(
         box=(int(x), int(y), int(w), int(h)), eye_left=eye_left, eye_right=eye_right,
-        chin_y=chin_y, crown_y=crown_y, detector="haar", face_count=len(faces),
+        chin_y=chin_y, crown_y=crown_y, detector="haar", face_count=companions,
         eyes_open=eyes_open, mouth_closed=UNKNOWN,
         measures={"eyes_detected": int(len(eyes))},
     )
@@ -353,10 +360,10 @@ def extract(image: np.ndarray, box: tuple[float, float, float, float]) -> tuple[
         max(0, min(left + crop_w, width) - max(left, 0)) * max(0, min(top + crop_h, height) - max(top, 0))
     )
     if pad_left or pad_top or pad_right or pad_bottom:
-        colour = [float(channel) for channel in _border_colour(image)]
-        image = cv2.copyMakeBorder(
-            image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=colour
-        )
+        # Edge replication rather than a flat fill: on a plain background it continues it
+        # exactly, and on a textured one it smears the texture instead of leaving the
+        # visible grey band a constant colour produces.
+        image = cv2.copyMakeBorder(image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
         left, top = left + pad_left, top + pad_top
     crop = image[top : top + crop_h, left : left + crop_w]
     fraction = padded_area / float(max(crop_w * crop_h, 1))
@@ -388,13 +395,21 @@ def normalise_exposure(image: np.ndarray) -> np.ndarray:
 
 
 def background_stats(image: np.ndarray) -> tuple[float, float]:
-    """Mean level and dispersion of the frame border, where only background should be."""
+    """Mean level and dispersion where only background can be: above and beside the head.
+
+    The side bands stop at 60 % of the height on purpose.  Lower than that they run into
+    the shoulders, and clothing would then be measured as a non-uniform background — it
+    made every real photograph fail this criterion, studio shots included.
+    """
     height, width = image.shape[:2]
     grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     band = max(2, width // 12)
     top_band = max(2, height // 8)
+    shoulder_line = max(top_band + 1, int(0.60 * height))
     samples = np.concatenate([
-        grey[:top_band].ravel(), grey[:, :band].ravel(), grey[:, -band:].ravel(),
+        grey[:top_band].ravel(),
+        grey[top_band:shoulder_line, :band].ravel(),
+        grey[top_band:shoulder_line, -band:].ravel(),
     ])
     return float(samples.mean()), float(samples.std())
 
