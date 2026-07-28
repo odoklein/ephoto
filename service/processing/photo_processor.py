@@ -38,8 +38,13 @@ RATIO_TOLERANCE = 0.02
 MAX_BYTES = 2_000_000
 # 32–36 mm of head on a 45 mm frame, with the crop aimed at the middle of the band.
 HEAD_RATIO_MIN, HEAD_RATIO_MAX, HEAD_RATIO_TARGET = 0.70, 0.80, 0.75
-# Eye line measured from the top of the frame; ICAO puts it in the upper third.
-EYE_LINE_TARGET, EYE_LINE_MIN, EYE_LINE_MAX = 0.36, 0.29, 0.45
+# Space kept above the crown: ~3.5 mm of the 45 mm print. The crop is anchored here
+# rather than on the eye line, because anchoring on the eyes while also sizing on the
+# head ratio leaves no margin at all above the skull and clips it on real photographs.
+TOP_MARGIN_TARGET = 0.08
+# Eye line measured from the top of the frame: 3.5 mm of margin plus roughly 45 % of a
+# 34 mm head puts it near 0.42. Checked afterwards, never used to position the crop.
+EYE_LINE_MIN, EYE_LINE_MAX = 0.33, 0.50
 TILT_MAX_DEG = 5.0
 # The crown is above the highest face landmark; this share of the face height is the
 # usual anthropometric approximation for the skull, and the reviewer confirms it.
@@ -215,9 +220,10 @@ def _cascade_geometry(image: np.ndarray) -> FaceGeometry | None:
     if len(faces) == 0:
         return None
     x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
-    # The frontal cascade box runs from mid-forehead to just below the chin.
-    chin_y = y + 1.02 * h
-    crown_y = y - 0.30 * h
+    # The frontal cascade box runs from mid-forehead to about the chin; the crown guess
+    # is deliberately generous because refine_crown() measures it properly afterwards.
+    chin_y = y + 0.94 * h
+    crown_y = y - 0.35 * h
 
     eye_detector = _cascade("haarcascade_eye.xml")
     eyes = (
@@ -246,8 +252,54 @@ def _cascade_geometry(image: np.ndarray) -> FaceGeometry | None:
     )
 
 
+def refine_crown(image: np.ndarray, geometry: FaceGeometry) -> float:
+    """Locate the top of the hair against the background, above the face box.
+
+    Chin-to-crown is *the* ANTS dimension, and no landmark model reaches past the
+    forehead, so the anthropometric guess is only a starting point.  Scanning downwards
+    from above until the central band stops matching the background colour measures the
+    skull instead of assuming it.  The answer is clamped around the guess: on a busy
+    background the scan degrades to the estimate rather than to nonsense.
+    """
+    height, width = image.shape[:2]
+    x, y, w, h = geometry.box
+    guess = geometry.crown_y
+    x0, x1 = max(0, x + w // 4), min(width, x + 3 * w // 4)
+    search_top = max(0, int(guess - 0.40 * h))
+    search_bottom = min(height, int(y + 0.25 * h))  # certainly forehead by then
+    if x1 - x0 < 8 or search_bottom - search_top < 8:
+        return guess
+
+    # Background reference: the two upper corners, which a portrait leaves empty.
+    corner_h, corner_w = max(2, height // 8), max(2, width // 6)
+    corners = np.concatenate([
+        image[:corner_h, :corner_w].reshape(-1, 3), image[:corner_h, -corner_w:].reshape(-1, 3),
+    ]).astype(np.int16)
+    background = np.median(corners, axis=0)
+    spread = float(np.median(np.abs(corners - background).sum(axis=1)))
+    # A textured wall already differs from its own median; ask the head to differ more.
+    tolerance = max(60.0, 2.5 * spread)
+
+    strip = image[search_top:search_bottom, x0:x1].astype(np.int16)
+    distance = np.abs(strip - background).sum(axis=2)
+    solid = (distance > tolerance).mean(axis=1) > 0.6
+    if not solid.any():
+        return guess
+    # First row of a run that keeps going: a lone dark row is a shadow, not a skull.
+    run = np.convolve(solid.astype(np.float32), np.ones(5) / 5.0, mode="same") > 0.8
+    if not run.any():
+        return guess
+    measured = float(search_top + int(np.argmax(run)))
+    return min(max(measured, search_top), float(y))
+
+
 def detect_face(image: np.ndarray) -> FaceGeometry | None:
-    return _mediapipe_geometry(image) or _cascade_geometry(image)
+    geometry = _mediapipe_geometry(image) or _cascade_geometry(image)
+    if geometry is not None:
+        crown = refine_crown(image, geometry)
+        geometry.measures["crown_shift_px"] = round(crown - geometry.crown_y, 1)
+        geometry.crown_y = crown
+    return geometry
 
 
 def available_detector() -> str:
@@ -275,8 +327,9 @@ def crop_box(image: np.ndarray, geometry: FaceGeometry | None, override: CropOve
     else:
         crop_h = geometry.head_height / HEAD_RATIO_TARGET
         crop_w = crop_h * PHOTO_RATIO
-        eye_x, eye_y = geometry.eye_centre
-        left, top = eye_x - crop_w / 2, eye_y - EYE_LINE_TARGET * crop_h
+        eye_x, _ = geometry.eye_centre
+        left = eye_x - crop_w / 2
+        top = geometry.crown_y - TOP_MARGIN_TARGET * crop_h
     if override.active:
         zoom = max(0.5, min(override.zoom, 2.0))
         new_w, new_h = crop_w * zoom, crop_h * zoom
