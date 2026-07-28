@@ -6,7 +6,9 @@ the exported signature keeps its natural anti-aliased edges instead of collapsin
 a harsh one-bit line.  The only structural operation applied to ink is a single 3x3
 closing that reconnects micro-gaps; there is no erosion, no dilation and no smoothing
 of the handwriting shape.  Geometry is limited to crop, uniform scaling and
-letterboxing, so strokes are never stretched.
+letterboxing, so strokes are never stretched.  Sheets written with a light pen on a
+dark background are detected and inverted first, so both contrast directions share one
+extraction path and one black-on-white export.
 
 The measurable checks in this program are local technical checks, not a guarantee of
 acceptance by ANTS or certif-idphoto.fr, whose server-side rules may change.

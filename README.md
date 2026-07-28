@@ -12,6 +12,11 @@ and `signature_report.csv`. It uses illumination normalisation and thresholding 
 remove paper/shadows, performs no morphology on ink, crops with a margin, and places
 the result on a 521×134 (4:1) PNG canvas without non-uniform scaling.
 
+Both contrast directions are accepted: a white or pale pen on a dark background is
+detected and inverted before extraction, so it goes through exactly the same pipeline
+and is exported as black ink on white like any other sheet. Such files are marked
+`+inverted` in the report's `processing_mode` column.
+
 BioGaze is not available from PyPI. If the client supplies its vendor wheel/private
 index, install it separately; `--require-biogaze` then makes validation stop unless
 the module is available. Its public Python processing API is not stable enough to
