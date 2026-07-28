@@ -4,3 +4,5 @@ __pycache__/
 venv/
 storage/
 output_photos/
+# Portraits de test : données personnelles, elles ne partent jamais sur GitHub.
+samples/

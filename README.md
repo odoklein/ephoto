@@ -73,6 +73,7 @@ Ephoto/
 | GET | `/api/v1/submissions/{id}` | `X-API-Key` | Statut et rapports, pour un scénario Make en attente |
 | POST | `/api/v1/validate/{id}` | Basic | Décision `{"action": "accept" \| "reject", "reason": "…"}` |
 | GET | `/admin/dashboard` | Basic | Liste des dossiers, scores, filtres |
+| GET/POST | `/admin/nouveau` | Basic | Création manuelle d'un dossier (test ou comptoir) |
 | GET | `/admin/submissions/{id}` | Basic | Avant/après, métadonnées, checklist, décision |
 | POST | `/admin/submissions/{id}/recrop` | Basic | Recadrage manuel (zoom + décalages) |
 | GET | `/api/health` | — | État du service et détecteur de visage actif |

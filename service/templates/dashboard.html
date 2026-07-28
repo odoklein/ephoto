@@ -8,12 +8,15 @@
     <h1 class="text-2xl font-semibold text-slate-900">Dossiers</h1>
     <p class="mt-1 text-sm text-slate-500">Photo d'identité et signature préparées automatiquement, en attente de votre décision.</p>
   </div>
+  <div class="flex items-center gap-3">
+  <a href="/admin/nouveau" class="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700">+ Nouveau dossier</a>
   <nav class="flex gap-1 rounded-lg bg-white p-1 text-sm shadow-sm ring-1 ring-slate-200">
     {% for key, label in [('open', 'À contrôler'), ('accepted', 'Transmis'), ('rejected', 'Refusés')] %}
       <a href="/admin/dashboard?show={{ key }}"
          class="rounded-md px-3 py-1.5 {{ 'bg-slate-900 text-white' if show == key else 'text-slate-600 hover:bg-slate-100' }}">{{ label }}</a>
     {% endfor %}
   </nav>
+  </div>
 </div>
 
 <div class="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">

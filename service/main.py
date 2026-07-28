@@ -268,6 +268,38 @@ def dashboard(request: Request, show: str = "open", reviewer: str = Depends(requ
     )
 
 
+@api.get("/admin/nouveau", response_class=HTMLResponse)
+def manual_form(request: Request, reviewer: str = Depends(require_reviewer)) -> Response:
+    return templates.TemplateResponse(request, "new.html", {"reviewer": reviewer, "settings": settings})
+
+
+@api.post("/admin/nouveau", include_in_schema=False)
+def manual_create(
+    photo: UploadFile = File(...), signature: UploadFile = File(...),
+    order_id: str = Form(default=""), name: str = Form(default=""), email: str = Form(default=""),
+    reviewer: str = Depends(require_reviewer),
+) -> RedirectResponse:
+    """Create a submission by hand, for testing and for counter staff.
+
+    Unlike the Make intake this runs the pipelines inline — the reviewer is waiting on
+    the page, so landing on a half-processed file would only confuse them.
+    """
+    sources = []
+    for upload, fallback in ((photo, "photo.jpg"), (signature, "signature.png")):
+        data = upload.file.read(settings.max_upload_bytes + 1)
+        if not data:
+            raise HTTPException(422, f"Fichier « {upload.filename or fallback} » vide.")
+        if len(data) > settings.max_upload_bytes:
+            raise HTTPException(413, f"Fichier « {upload.filename or fallback} » trop volumineux.")
+        sources.append((data, upload.filename or fallback))
+
+    submission_id = secrets.token_hex(8)
+    customer = {key: value for key, value in (("name", name), ("email", email)) if value}
+    database.create(settings.database_path, submission_id, order_id, customer)
+    _process(submission_id, sources[0], sources[1])
+    return RedirectResponse(f"/admin/submissions/{submission_id}", status_code=303)
+
+
 @api.get("/admin/submissions/{submission_id}", response_class=HTMLResponse)
 def submission_detail(request: Request, submission_id: str, reviewer: str = Depends(require_reviewer)) -> Response:
     record = database.get(settings.database_path, submission_id)

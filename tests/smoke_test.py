@@ -233,6 +233,32 @@ def main() -> int:
         check("aucun envoi après refus", len(received) == 1)
         check("vue des refusés", second in client.get("/admin/dashboard?show=rejected", auth=auth).text)
 
+        # Manual creation from the panel: same pipelines, but processed inline
+        check("formulaire manuel protégé", client.get("/admin/nouveau").status_code == 401)
+        form = client.get("/admin/nouveau", auth=auth)
+        check("formulaire manuel rendu", form.status_code == 200 and 'name="signature"' in form.text)
+        manual = client.post(
+            "/admin/nouveau", auth=auth, follow_redirects=False,
+            files={"photo": ("p.png", photo_bytes, "image/png"),
+                   "signature": ("s.png", signature_bytes, "image/png")},
+            data={"order_id": "COMPTOIR-7", "name": "Alex Comptoir", "email": "alex@example.fr"},
+        )
+        check("dossier manuel créé", manual.status_code == 303, manual.text[:200])
+        third = manual.headers["location"].rsplit("/", 1)[-1]
+        state = client.get(f"/api/v1/submissions/{third}", headers=api_key).json()
+        check("dossier manuel déjà traité à l'arrivée", state["status"] == "pending", json.dumps(state)[:200])
+        check("dossier manuel complet",
+              state["photo"]["width"] > 0 and state["signature"]["width"] == 521,
+              json.dumps(state)[:200])
+        check("fiche manuelle affiche le client",
+              "alex@example.fr" in client.get(f"/admin/submissions/{third}", auth=auth).text)
+        check("lien vers le formulaire sur le dashboard",
+              "/admin/nouveau" in client.get("/admin/dashboard", auth=auth).text)
+        check("fichier vide refusé",
+              client.post("/admin/nouveau", auth=auth, follow_redirects=False,
+                          files={"photo": ("p.png", b"", "image/png"),
+                                 "signature": ("s.png", signature_bytes, "image/png")}).status_code == 422)
+
         # Malformed input
         check("base64 invalide rejeté",
               client.post("/api/v1/ingest", json={"photo": "%%%", "signature": "%%%"},

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Nouveau dossier{% endblock %}
+
+{% block content %}
+<a href="/admin/dashboard" class="text-sm text-slate-500 hover:text-slate-900">← Retour aux dossiers</a>
+
+<div class="mt-3 mb-6">
+  <h1 class="text-2xl font-semibold text-slate-900">Nouveau dossier</h1>
+  <p class="mt-1 text-sm text-slate-500">
+    Création manuelle, pour tester la chaîne ou traiter un client au comptoir. En
+    production, Make.com dépose les dossiers automatiquement sur <code class="rounded bg-slate-200 px-1">/api/v1/ingest</code>.
+  </p>
+</div>
+
+<form method="post" action="/admin/nouveau" enctype="multipart/form-data"
+      class="max-w-2xl space-y-5 rounded-lg bg-white p-6 shadow-sm ring-1 ring-slate-200">
+  <div class="grid gap-4 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-slate-800" for="photo">Photo d'identité</label>
+      <input id="photo" name="photo" type="file" required accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff"
+             class="mt-2 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-slate-700">
+      <p class="mt-1 text-xs text-slate-500">Portrait de face, cadré large : le service recadre au format 35×45 mm.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-slate-800" for="signature">Signature</label>
+      <input id="signature" name="signature" type="file" required accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff"
+             class="mt-2 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-slate-700">
+      <p class="mt-1 text-xs text-slate-500">Encre sombre sur papier clair, ou stylo clair sur fond sombre.</p>
+    </div>
+  </div>
+
+  <div class="grid gap-4 sm:grid-cols-3">
+    <div>
+      <label class="block text-sm font-medium text-slate-800" for="order_id">N° de commande</label>
+      <input id="order_id" name="order_id" type="text" placeholder="WC-10245"
+             class="mt-2 w-full rounded-md px-2 py-1.5 text-sm ring-1 ring-slate-300 focus:ring-slate-900">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-slate-800" for="name">Nom du client</label>
+      <input id="name" name="name" type="text" placeholder="Camille Roux"
+             class="mt-2 w-full rounded-md px-2 py-1.5 text-sm ring-1 ring-slate-300 focus:ring-slate-900">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-slate-800" for="email">Courriel</label>
+      <input id="email" name="email" type="email" placeholder="camille@example.fr"
+             class="mt-2 w-full rounded-md px-2 py-1.5 text-sm ring-1 ring-slate-300 focus:ring-slate-900">
+    </div>
+  </div>
+
+  <div class="flex items-center gap-4">
+    <button class="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
+      Traiter et ouvrir la fiche
+    </button>
+    <span class="text-xs text-slate-500">Le traitement prend une à deux secondes.</span>
+  </div>
+</form>
+{% endblock %}
