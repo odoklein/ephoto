@@ -52,6 +52,8 @@ INK_FLOOR_RATIO = 0.20
 MIN_OUTPUT_STROKE_PX = 1.15
 # How far the 4:1 canvas may grow past 521×134 to keep thin strokes above that width.
 MAX_CANVAS_SCALE = 2.0
+# Longest side used when deciding whether a sheet is light ink on a dark background.
+POLARITY_SAMPLE_PX = 512
 
 
 @dataclass
@@ -93,17 +95,49 @@ def load_bgr(path: Path) -> np.ndarray:
     return image
 
 
+def normalise_polarity(image: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Return the sheet with ink darker than its background, and whether it was flipped.
+
+    A white pen on a black sheet is the same handwriting with reversed contrast, so the
+    whole extraction pipeline can stay polarity-agnostic by flipping such sheets once,
+    here, instead of duplicating every threshold.  The decision is made on how far each
+    tail departs from the *local* background rather than from the overall level: a blur
+    wide enough to step over the strokes follows shadows and lighting gradients, which
+    would otherwise outweigh a faint pen and decide the polarity on their own.  Whichever
+    tail departs further is the ink, so a brighter one means a reversed sheet.  The test
+    runs on a downscaled copy for speed, both tails are measured the same way, and
+    inverting is exact (255 - v), so the call is symmetric, lossless and idempotent: a
+    flipped sheet reads as normal on the second pass.
+    """
+    grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    scale = POLARITY_SAMPLE_PX / max(grey.shape[:2])
+    if scale < 1:
+        grey = cv2.resize(grey, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    grey = grey.astype(np.float32)
+    local = cv2.GaussianBlur(grey, (0, 0), sigmaX=max(grey.shape[:2]) / 24.0)
+    residual = grey - local
+    darker = -float(np.percentile(residual, 0.5))
+    lighter = float(np.percentile(residual, 99.5))
+    if lighter > darker:
+        return cv2.bitwise_not(image), True
+    return image, False
+
+
 def ink_strength(image: np.ndarray) -> np.ndarray:
     """Return a float ink map in 0..1: 0 is paper, 1 is the darkest ink of the sheet.
 
-    The darkest colour channel is used instead of luminance so that blue or light
-    coloured pens keep their contrast.  Paper illumination is estimated with a large
+    Reverse-contrast sheets are flipped first, so the rest of this function always sees
+    dark ink on light paper.  The darkest colour channel is then used instead of
+    luminance so that blue or light coloured pens keep their contrast — on a flipped
+    sheet that same minimum picks the brightest original channel, which is what a white
+    or pale pen writes with.  Paper illumination is estimated with a large
     greyscale closing, which follows shadows, paper texture gradients and fingers in
     frame while stepping over the thin dark strokes themselves; dividing by it removes
     that illumination without the halos a blurred estimate leaves around ink.  The
     result is finally rescaled against the sheet's own ink peak, so faint low-contrast
     pens end up on the same scale as strong ones.
     """
+    image, _ = normalise_polarity(image)
     darkest = np.min(image, axis=2)
     # Light denoise: removes sensor and paper grain, keeps stroke edges intact.
     smoothed = cv2.bilateralFilter(darkest, 5, 25, 25)
@@ -323,13 +357,16 @@ def process_files(inputs: Iterable[Path], output_dir: Path, margin: int, max_byt
     for source in inputs:
         target = output_dir / f"{source.stem}_ephoto.png"
         try:
-            image = load_bgr(source)
+            image, inverted = normalise_polarity(load_bgr(source))
             strength = ink_strength(image)
             raw = basic_raw_mask(image, strength)
             mask, mode = ink_mask(image, strength, raw)
             result, raw_box, geometry = crop_and_canvas(mask, strength, margin)
             target.write_bytes(png_bytes(result))
-            rows.append(evaluate(source.name, target, raw, raw_box, max_bytes, mode, geometry))
+            # The export is black on white either way; the report still says which
+            # sheets arrived as light ink on a dark background.
+            label = f"{mode}+inverted" if inverted else mode
+            rows.append(evaluate(source.name, target, raw, raw_box, max_bytes, label, geometry))
         except Exception as exc:
             rows.append(ReportRow(source.name, "fail", "fail", "fail", "fail", "fail", 0, str(exc), "", None, None, None, None, "error"))
     return rows
