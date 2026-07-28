@@ -1,8 +1,20 @@
-opencv-python-headless>=4.8
+# Pinned below 5.0: OpenCV 5 removed CascadeClassifier and its bundled cascade data,
+# which the photo processor uses when MediaPipe is not installed. MediaPipe also
+# expects the 4.x line.
+opencv-python-headless>=4.8,<5
 numpy>=1.24
 Pillow>=10.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.12
+jinja2>=3.1          # review panel templates
+httpx>=0.27          # outgoing webhook to Make.com / Ephoto.io
+# Face landmarks for the ANTS photo checks. Optional on purpose: without it the photo
+# processor falls back to the Haar cascades bundled with OpenCV and reports the criteria
+# it cannot measure (mouth, and eyes when the cascade misses) as "indéterminé" instead of
+# guessing. Requires Python <= 3.12 and pulls opencv-contrib-python, so reinstall the
+# headless build afterwards:
+#   pip install mediapipe==0.10.21 && pip install --force-reinstall opencv-python-headless
+# mediapipe==0.10.21
 # BioGaze is not published on PyPI. Install it from the vendor-provided wheel or
 # private package index, then use --require-biogaze to enforce its availability.

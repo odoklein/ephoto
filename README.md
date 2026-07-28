@@ -26,6 +26,107 @@ The validation checks are technical local heuristics. They cannot certify ANTS o
 certif-idphoto.fr acceptance; test an exported file in the actual intake system
 before making that claim. Adjust the service’s actual file limit with `--max-bytes`.
 
+## Microservice de dossiers : photo ANTS + signature + validation humaine
+
+Le service reçoit un dossier client depuis Make.com, prépare **la photo d'identité** et
+**la signature**, calcule un rapport de conformité, puis attend la décision d'un
+contrôleur avant de transmettre le dossier à Make/Ephoto.io.
+
+```
+WooCommerce → Webhook Make → POST /api/v1/ingest → traitement OpenCV → file d'attente
+                                                          ↓
+                                        /admin/dashboard (contrôleur, mot de passe)
+                                                          ↓
+                          « Accepter » → webhook sortant Make/Ephoto.io → archivage
+                          « Refuser »  → motif enregistré, rien n'est transmis
+```
+
+### Arborescence
+
+```
+Ephoto/
+├─ signature_validator.py      # pipeline signature en production — inchangé
+├─ app.py                      # page publique de contrôle signature — inchangée
+├─ index.html
+├─ service/                    # le microservice
+│  ├─ main.py                  # FastAPI : ingest, dashboard, validate
+│  ├─ config.py                # variables d'environnement (secrets « fail closed »)
+│  ├─ database.py              # SQLite : une ligne par dossier
+│  ├─ storage.py               # images sur disque (original + traité)
+│  ├─ security.py              # clé d'API (Make) + HTTP Basic (contrôleur)
+│  ├─ outbound.py              # webhook sortant + téléchargement des sources
+│  ├─ models.py                # Check / ProcessedImage, calcul du score
+│  ├─ processing/
+│  │  ├─ photo_processor.py    # cadrage et contrôles ANTS/ICAO
+│  │  ├─ signature_processor.py# adaptateur vers signature_validator.py
+│  │  └─ imaging.py            # décodage, encodage, netteté
+│  └─ templates/               # Jinja2 + Tailwind (dashboard, fiche dossier)
+├─ tests/smoke_test.py         # test bout en bout, sans réseau ni données réelles
+└─ storage/                    # dossiers en attente (hors dépôt, purgé automatiquement)
+```
+
+### Points d'entrée
+
+| Méthode | Route | Auth | Rôle |
+|---|---|---|---|
+| POST | `/api/v1/ingest` | `X-API-Key` | Réception Make : JSON (base64 ou URL) **ou** multipart |
+| GET | `/api/v1/submissions/{id}` | `X-API-Key` | Statut et rapports, pour un scénario Make en attente |
+| POST | `/api/v1/validate/{id}` | Basic | Décision `{"action": "accept" \| "reject", "reason": "…"}` |
+| GET | `/admin/dashboard` | Basic | Liste des dossiers, scores, filtres |
+| GET | `/admin/submissions/{id}` | Basic | Avant/après, métadonnées, checklist, décision |
+| POST | `/admin/submissions/{id}/recrop` | Basic | Recadrage manuel (zoom + décalages) |
+| GET | `/api/health` | — | État du service et détecteur de visage actif |
+
+La page publique de contrôle de signature reste montée à la racine et garde exactement
+son comportement actuel.
+
+### Variables d'environnement
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `INGEST_API_KEY` | — | **Obligatoire** : sans elle `/api/v1/ingest` répond 503 |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | — | **Obligatoires** : sans eux le panneau répond 503 |
+| `MAKE_WEBHOOK_URL` | — | Webhook de sortie ; sans lui l'acceptation échoue en 502 |
+| `MAKE_WEBHOOK_TOKEN` | — | Envoyé en `Authorization: Bearer …` |
+| `STORAGE_DIR` | `/data` (Docker) | Images et base SQLite |
+| `PURGE_AFTER_DAYS` | `30` | Purge des dossiers décidés (RGPD) |
+| `FLATTEN_BACKGROUND` | `auto` | `auto`, `always` ou `never` pour le détourage du fond |
+| `PUBLIC_BASE_URL` | — | Préfixe du lien de contrôle renvoyé à Make |
+
+### Contrôles de la photo
+
+Géométrie 35 × 45 mm : hauteur de tête 70–80 % du cadre, ligne des yeux à 29–45 % du
+haut, export au ratio 414 × 532 (ou 828 × 1064) en JPEG sous 2 Mo. S'y ajoutent
+l'inclinaison de la tête, les yeux ouverts, la bouche fermée, l'uniformité et la clarté
+du fond, la luminosité, la netteté et la présence d'un seul visage.
+
+Les repères viennent de **MediaPipe Face Mesh** s'il est installé, sinon des cascades de
+Haar fournies par OpenCV. Un critère que le détecteur disponible ne sait pas mesurer est
+affiché **« indéterminé » (pastille grise)** et exclu du score : il n'est jamais présenté
+comme conforme. `/api/health` indique le détecteur réellement actif.
+
+### Lancer et tester en local
+
+```bash
+py -m pip install -r requirements.txt
+py tests/smoke_test.py
+```
+
+```bash
+INGEST_API_KEY=dev ADMIN_USER=ctrl ADMIN_PASSWORD=ctrl py -m uvicorn service.main:app --reload
+```
+
+### Limites connues
+
+- Les seuils (netteté, uniformité du fond, ouverture des yeux) sont des heuristiques
+  locales : elles ne valent pas acceptation par l'ANTS, d'où le contrôle humain.
+- Le remplacement de fond par GrabCut n'est conservé que s'il rend réellement le fond
+  plus uniforme ; sinon la photo d'origine est gardée telle quelle.
+- L'estimation du sommet du crâne est anthropométrique (les repères s'arrêtent au front) :
+  c'est une approximation, que le contrôleur peut corriger avec le recadrage manuel.
+- `opencv-python-headless` est épinglé sous 5.0 : OpenCV 5 a supprimé `CascadeClassifier`
+  et ses cascades, donc sans MediaPipe aucune géométrie ne serait mesurable.
+
 ## Déploiement Dokploy : vraie API Python
 
 Le dépôt contient une application FastAPI qui sert l’interface et traite les uploads
@@ -44,8 +145,15 @@ aux dossiers publics `input/`, `output/` ou `reports/`.
 3. Indiquez `./docker-compose.yml` comme chemin Compose.
 4. Dans l’onglet **Domains**, ajoutez votre domaine et sélectionnez le port interne
    `8000`.
-5. Cliquez sur Deploy. Les pushes futurs sur la branche choisie peuvent déclencher le
+5. Dans l’onglet **Environment**, renseignez au minimum `INGEST_API_KEY`, `ADMIN_USER`,
+   `ADMIN_PASSWORD`, `MAKE_WEBHOOK_URL` et `PUBLIC_BASE_URL` (voir le tableau plus
+   haut). Sans ces variables, l’ingestion et le panneau de contrôle répondent 503.
+6. Cliquez sur Deploy. Les pushes futurs sur la branche choisie peuvent déclencher le
    redéploiement automatique.
+
+Le conteneur démarre `service.main:app` : le microservice et la page publique de
+signature sont servis par le même processus. Les dossiers clients vivent dans le volume
+`submissions` monté sur `/data`, hors de l’arborescence servie en statique.
 
 Dokploy recommande sa configuration de domaine native plutôt que des labels Traefik
 écrits à la main. Pour une démo, n’exposez dans `input/` et `output/` que des

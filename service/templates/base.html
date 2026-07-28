@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Contrôle des dossiers{% endblock %} · CERTIF ID</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-full bg-slate-100 text-slate-800 antialiased">
+  <header class="bg-slate-900 text-white">
+    <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-4">
+      <a href="/admin/dashboard" class="text-sm font-semibold tracking-wide">CERTIF ID <span class="text-slate-400">·</span> Contrôle ANTS</a>
+      <div class="flex items-center gap-4 text-xs text-slate-300">
+        <span>Contrôleur : <b class="text-white">{{ reviewer }}</b></span>
+        {% if not settings.outbound_enabled %}
+          <span class="rounded bg-amber-500/20 px-2 py-1 text-amber-200">MAKE_WEBHOOK_URL non configuré</span>
+        {% endif %}
+      </div>
+    </div>
+  </header>
+  <main class="mx-auto max-w-7xl px-6 py-8">{% block content %}{% endblock %}</main>
+  <footer class="mx-auto max-w-7xl px-6 pb-10 text-xs text-slate-500">
+    Contrôles techniques locaux (OpenCV). Ils ne valent pas acceptation par l'ANTS :
+    la décision finale reste celle du contrôleur. Purge automatique après
+    {{ settings.purge_after_days }} jours.
+  </footer>
+</body>
+</html>

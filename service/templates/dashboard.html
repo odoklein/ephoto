@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui %}
+{% block title %}Dossiers en attente{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+  <div>
+    <h1 class="text-2xl font-semibold text-slate-900">Dossiers</h1>
+    <p class="mt-1 text-sm text-slate-500">Photo d'identité et signature préparées automatiquement, en attente de votre décision.</p>
+  </div>
+  <nav class="flex gap-1 rounded-lg bg-white p-1 text-sm shadow-sm ring-1 ring-slate-200">
+    {% for key, label in [('open', 'À contrôler'), ('accepted', 'Transmis'), ('rejected', 'Refusés')] %}
+      <a href="/admin/dashboard?show={{ key }}"
+         class="rounded-md px-3 py-1.5 {{ 'bg-slate-900 text-white' if show == key else 'text-slate-600 hover:bg-slate-100' }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+</div>
+
+<div class="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+  {% for key, label in [('pending', 'À contrôler'), ('processing', 'En traitement'), ('accepted', 'Transmis'), ('rejected', 'Refusés')] %}
+    <div class="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div class="text-2xl font-semibold text-slate-900">{{ counts.get(key, 0) }}</div>
+      <div class="text-xs uppercase tracking-wide text-slate-500">{{ label }}</div>
+    </div>
+  {% endfor %}
+</div>
+
+<div class="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+  <table class="w-full text-left text-sm">
+    <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="px-4 py-3">Dossier</th>
+        <th class="px-4 py-3">Client</th>
+        <th class="px-4 py-3 w-40">Photo</th>
+        <th class="px-4 py-3 w-40">Signature</th>
+        <th class="px-4 py-3">Statut</th>
+        <th class="px-4 py-3"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for record in records %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-3">
+            <div class="font-mono text-xs text-slate-900">{{ record.id }}</div>
+            <div class="text-xs text-slate-500">{{ record.created_at[:16].replace('T', ' ') }}{% if record.source_ref %} · cmd {{ record.source_ref }}{% endif %}</div>
+          </td>
+          <td class="px-4 py-3">
+            <div class="text-slate-900">{{ record.customer.get('name') or ((record.customer.get('first_name', '') ~ ' ' ~ record.customer.get('last_name', '')) | trim) or '—' }}</div>
+            <div class="text-xs text-slate-500">{{ record.customer.get('email', '') }}</div>
+          </td>
+          <td class="px-4 py-3">
+            <div class="mb-1 text-xs text-slate-600">{{ record.photo_score }} %</div>{{ ui.score_bar(record.photo_score) }}
+          </td>
+          <td class="px-4 py-3">
+            <div class="mb-1 text-xs text-slate-600">{{ record.signature_score }} %</div>{{ ui.score_bar(record.signature_score) }}
+          </td>
+          <td class="px-4 py-3">{{ ui.status_badge(record.status) }}</td>
+          <td class="px-4 py-3 text-right">
+            <a href="/admin/submissions/{{ record.id }}" class="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700">Ouvrir</a>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">Aucun dossier dans cette vue.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

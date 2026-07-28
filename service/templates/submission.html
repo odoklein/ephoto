@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% import "macros.html" as ui %}
+{% block title %}Dossier {{ record.id }}{% endblock %}
+
+{% block content %}
+{% set photo = record.photo_report %}
+{% set signature = record.signature_report %}
+
+<a href="/admin/dashboard" class="text-sm text-slate-500 hover:text-slate-900">← Retour aux dossiers</a>
+
+<div class="mt-3 mb-6 flex flex-wrap items-start justify-between gap-4">
+  <div>
+    <h1 class="flex items-center gap-3 text-2xl font-semibold text-slate-900">
+      Dossier <span class="font-mono text-lg">{{ record.id }}</span> {{ ui.status_badge(record.status) }}
+    </h1>
+    <p class="mt-1 text-sm text-slate-500">
+      Reçu le {{ record.created_at[:16].replace('T', ' ') }}
+      {% if record.source_ref %} · commande {{ record.source_ref }}{% endif %}
+      {% if record.customer %} · {{ record.customer.get('email', '') }}{% endif %}
+    </p>
+  </div>
+  <div class="text-right text-sm">
+    <div>Photo <b>{{ photo.get('score', 0) }} %</b> · Signature <b>{{ signature.get('score', 0) }} %</b></div>
+    {% if record.customer %}
+      <div class="text-xs text-slate-500">{{ record.customer.get('name') or ((record.customer.get('first_name', '') ~ ' ' ~ record.customer.get('last_name', '')) | trim) }}</div>
+    {% endif %}
+  </div>
+</div>
+
+{% if record.error %}
+  <div class="mb-6 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-200">Traitement : {{ record.error }}</div>
+{% endif %}
+{% if record.forward_status and record.status != 'accepted' %}
+  <div class="mb-6 rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-900 ring-1 ring-rose-200">Dernière transmission : {{ record.forward_status }}</div>
+{% endif %}
+
+<div class="grid gap-6 lg:grid-cols-2">
+  {# ── Photo ───────────────────────────────────────────────────────────────── #}
+  <section class="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="font-semibold text-slate-900">Photo d'identité</h2>
+      <span class="text-sm text-slate-500">{{ photo.get('width', 0) }}×{{ photo.get('height', 0) }} px ·
+        {{ (photo.get('bytes', 0) / 1000) | round | int }} ko · {{ photo.get('media_type', '—') }}</span>
+    </div>
+    <div class="mb-4 grid grid-cols-2 gap-3">
+      {% for kind, label in [('photo_original', 'Original'), ('photo_clean', 'Traitée (35:45)')] %}
+        <figure>
+          <div class="flex h-56 items-center justify-center rounded border border-slate-200 bg-[repeating-conic-gradient(#f8fafc_0_25%,#eef2f7_0_50%)] bg-[length:16px_16px]">
+            {% if files[kind] %}<img src="/admin/files/{{ record.id }}/{{ kind }}" alt="{{ label }}" class="max-h-full max-w-full object-contain">
+            {% else %}<span class="text-xs text-slate-400">absent</span>{% endif %}
+          </div>
+          <figcaption class="mt-1 text-center text-xs text-slate-500">{{ label }}</figcaption>
+        </figure>
+      {% endfor %}
+    </div>
+    {{ ui.score_bar(photo.get('score', 0)) }}
+    <div class="mt-4">{{ ui.checklist(photo) }}</div>
+
+    <details class="mt-4 text-xs text-slate-500">
+      <summary class="cursor-pointer select-none">Mesures techniques</summary>
+      <dl class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+        {% for key, value in (photo.get('metadata') or {}).items() %}
+          <dt class="text-slate-400">{{ key }}</dt><dd class="text-slate-700">{{ '—' if value is none else value }}</dd>
+        {% endfor %}
+      </dl>
+    </details>
+
+    {% if record.status in ('pending', 'processing') and files['photo_original'] %}
+      <form method="post" action="/admin/submissions/{{ record.id }}/recrop" class="mt-4 flex flex-wrap items-end gap-3 rounded-md bg-slate-50 p-3">
+        <div>
+          <label class="block text-xs text-slate-500" for="zoom">Zoom</label>
+          <input id="zoom" name="zoom" type="number" step="0.05" min="0.5" max="2" value="1"
+                 class="w-24 rounded border-slate-300 px-2 py-1 text-sm ring-1 ring-slate-200">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500" for="dx">Décalage ↔</label>
+          <input id="dx" name="dx" type="number" step="0.02" min="-0.5" max="0.5" value="0"
+                 class="w-24 rounded border-slate-300 px-2 py-1 text-sm ring-1 ring-slate-200">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500" for="dy">Décalage ↕</label>
+          <input id="dy" name="dy" type="number" step="0.02" min="-0.5" max="0.5" value="0"
+                 class="w-24 rounded border-slate-300 px-2 py-1 text-sm ring-1 ring-slate-200">
+        </div>
+        <button class="rounded-md bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-300">Recadrer</button>
+        <p class="w-full text-xs text-slate-500">Zoom &gt; 1 élargit le cadre (visage plus petit). Décalages en fraction du cadre.</p>
+      </form>
+    {% endif %}
+  </section>
+
+  {# ── Signature ───────────────────────────────────────────────────────────── #}
+  <section class="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="font-semibold text-slate-900">Signature</h2>
+      <span class="text-sm text-slate-500">{{ signature.get('width', 0) }}×{{ signature.get('height', 0) }} px ·
+        {{ (signature.get('bytes', 0) / 1000) | round | int }} ko · {{ signature.get('media_type', '—') }}</span>
+    </div>
+    <div class="mb-4 space-y-3">
+      {% for kind, label in [('signature_original', 'Original'), ('signature_clean', 'Nettoyée (4:1)')] %}
+        <figure>
+          <div class="flex h-28 items-center justify-center rounded border border-slate-200 bg-white">
+            {% if files[kind] %}<img src="/admin/files/{{ record.id }}/{{ kind }}" alt="{{ label }}" class="max-h-full max-w-full object-contain">
+            {% else %}<span class="text-xs text-slate-400">absent</span>{% endif %}
+          </div>
+          <figcaption class="mt-1 text-center text-xs text-slate-500">{{ label }}</figcaption>
+        </figure>
+      {% endfor %}
+    </div>
+    {{ ui.score_bar(signature.get('score', 0)) }}
+    <div class="mt-4">{{ ui.checklist(signature) }}</div>
+
+    <details class="mt-4 text-xs text-slate-500">
+      <summary class="cursor-pointer select-none">Mesures techniques</summary>
+      <dl class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+        {% for key, value in (signature.get('metadata') or {}).items() %}
+          <dt class="text-slate-400">{{ key }}</dt><dd class="text-slate-700">{{ '—' if value is none else value }}</dd>
+        {% endfor %}
+      </dl>
+    </details>
+  </section>
+</div>
+
+{# ── Décision ─────────────────────────────────────────────────────────────── #}
+{% if record.status in ('pending', 'processing') %}
+  <form method="post" action="/admin/submissions/{{ record.id }}/decision"
+        class="mt-6 rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+    <label class="block text-sm font-medium text-slate-800" for="note">Commentaire (motif en cas de refus)</label>
+    <textarea id="note" name="note" rows="2" class="mt-2 w-full rounded-md border-0 p-2 text-sm ring-1 ring-slate-300 focus:ring-slate-900"
+              placeholder="Ex. : photo floue, sourire marqué, fond non uniforme…"></textarea>
+    <div class="mt-4 flex flex-wrap gap-3">
+      <button name="action" value="accept"
+              class="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">
+        Accepter et transmettre
+      </button>
+      <button name="action" value="reject" formnovalidate
+              class="rounded-md bg-white px-4 py-2 text-sm font-semibold text-rose-700 ring-1 ring-rose-300 hover:bg-rose-50">
+        Refuser
+      </button>
+      <p class="self-center text-xs text-slate-500">
+        « Accepter » envoie photo + signature au webhook Make/Ephoto.io puis archive le dossier.
+      </p>
+    </div>
+  </form>
+{% else %}
+  <div class="mt-6 rounded-lg bg-white p-5 text-sm shadow-sm ring-1 ring-slate-200">
+    Décidé par <b>{{ record.reviewer or '—' }}</b> le {{ record.decided_at[:16].replace('T', ' ') }}.
+    {% if record.forward_status %} Transmission : {{ record.forward_status }}.{% endif %}
+    {% if record.reviewer_note %}<div class="mt-1 text-slate-600">Motif : {{ record.reviewer_note }}</div>{% endif %}
+  </div>
+{% endif %}
+{% endblock %}

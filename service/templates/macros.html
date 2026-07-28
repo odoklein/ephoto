@@ -1,0 +1,35 @@
+{# Shared UI fragments: kept out of base.html so children can import without rendering it. #}
+
+{% macro dot(status) -%}
+  {%- if status == 'pass' -%}<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" title="conforme"></span>
+  {%- elif status == 'fail' -%}<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500" title="non conforme"></span>
+  {%- else -%}<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-slate-300" title="indéterminé"></span>{%- endif -%}
+{%- endmacro %}
+
+{% macro score_bar(value) -%}
+  <div class="h-1.5 w-full overflow-hidden rounded bg-slate-200">
+    <div class="h-full {{ 'bg-emerald-500' if value >= 90 else 'bg-amber-500' if value >= 70 else 'bg-rose-500' }}" style="width: {{ value }}%"></div>
+  </div>
+{%- endmacro %}
+
+{% macro status_badge(status) -%}
+  {%- set styles = {'pending': 'bg-sky-100 text-sky-800', 'processing': 'bg-slate-200 text-slate-700', 'accepted': 'bg-emerald-100 text-emerald-800', 'rejected': 'bg-rose-100 text-rose-800', 'error': 'bg-amber-100 text-amber-900'} -%}
+  {%- set labels = {'pending': 'À contrôler', 'processing': 'Traitement…', 'accepted': 'Transmis', 'rejected': 'Refusé', 'error': 'Erreur'} -%}
+  <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ styles.get(status, 'bg-slate-200 text-slate-700') }}">{{ labels.get(status, status) }}</span>
+{%- endmacro %}
+
+{% macro checklist(report) -%}
+  <ul class="space-y-1.5 text-sm">
+    {% for check in report.get('checks', []) %}
+      <li class="flex items-start gap-2.5">
+        {{ dot(check.status) }}
+        <span class="flex-1 leading-tight {{ 'text-slate-400' if check.status == 'unknown' else '' }}">
+          {{ check.label }}
+          {% if check.detail %}<span class="text-xs text-slate-500">— {{ check.detail }}</span>{% endif %}
+        </span>
+      </li>
+    {% else %}
+      <li class="text-sm text-slate-500">Aucun contrôle disponible.</li>
+    {% endfor %}
+  </ul>
+{%- endmacro %}
