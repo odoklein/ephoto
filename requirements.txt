@@ -9,12 +9,14 @@ uvicorn[standard]>=0.30
 python-multipart>=0.0.12
 jinja2>=3.1          # review panel templates
 httpx>=0.27          # outgoing webhook to Make.com / Ephoto.io
-# Face landmarks for the ANTS photo checks. Optional on purpose: without it the photo
-# processor falls back to the Haar cascades bundled with OpenCV and reports the criteria
-# it cannot measure (mouth, and eyes when the cascade misses) as "indéterminé" instead of
-# guessing. Requires Python <= 3.12 and pulls opencv-contrib-python, so reinstall the
-# headless build afterwards:
-#   pip install mediapipe==0.10.21 && pip install --force-reinstall opencv-python-headless
-# mediapipe==0.10.21
+# Face landmarks for the ANTS photo checks. The code still degrades to the Haar cascades
+# bundled with OpenCV when this is missing, reporting what it cannot measure (mouth, and
+# eyes when the cascade misses) as "indéterminé" instead of guessing — but that fallback
+# grades geometry from a box rather than from landmarks, so it belongs to development,
+# not to the deployment. Requires Python <= 3.12 and pulls opencv-contrib-python, which
+# ships its own cv2: the Dockerfile reinstalls the headless build straight afterwards, and
+# a manual install must do the same.
+#   pip install --force-reinstall opencv-python-headless
+mediapipe==0.10.21
 # BioGaze is not published on PyPI. Install it from the vendor-provided wheel or
 # private package index, then use --require-biogaze to enforce its availability.

@@ -6,7 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# MediaPipe depends on opencv-contrib-python, which installs a second, non-headless cv2
+# over the one requested here; the reinstall puts the headless build back on top, which is
+# the only one that imports without a display server.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --force-reinstall opencv-python-headless
 
 COPY . ./
 # /data holds submissions and the SQLite file: outside /app, so the public static

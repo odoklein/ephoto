@@ -49,6 +49,16 @@ TILT_MAX_DEG = 5.0
 # The crown is above the highest face landmark; this share of the face height is the
 # usual anthropometric approximation for the skull, and the reviewer confirms it.
 CROWN_EXTENSION = 0.28
+# The eye line sits at this share of the chin-to-crown distance, counted from the chin.
+# The cascade fallback derives its crown from it: the chin edge of the box and the eyes
+# are the only two points those cascades actually give, so anchoring the skull on them
+# keeps the fallback geometry internally consistent.
+EYE_TO_CHIN_RATIO = 0.53
+# How far above the anthropometric guess refine_crown() may travel, as a share of the
+# estimated head height. The scan follows the outline of the *hair*, which on a voluminous
+# cut stands well above the skull ANTS actually measures; the reach upwards is therefore
+# bounded, while the correction downwards — an over-generous guess — stays free.
+CROWN_REFINE_LIMIT = 0.10
 EYE_ASPECT_OPEN = 0.19  # eye aspect ratio below this reads as a closed or blinking eye
 MOUTH_GAP_MAX = 0.15  # inner lip gap over mouth width
 # Calibrated on the sample photographs: a studio grey with a soft vignette measures ~23,
@@ -140,6 +150,16 @@ def _face_mesh():
     return _mesh
 
 
+def _point(values: np.ndarray) -> tuple[float, float]:
+    """A landmark as two plain floats.
+
+    Kept out of numpy on purpose: the eye coordinates end up in the report metadata, and
+    `np.float32` — unlike `np.float64`, which subclasses `float` — is not JSON
+    serialisable, so leaving it in place makes json.dumps() reject the whole submission.
+    """
+    return float(values[0]), float(values[1])
+
+
 def _eye_aspect_ratio(points: np.ndarray) -> float:
     """Soukupová-Čech eye aspect ratio: lid separation over eye width."""
     vertical = np.linalg.norm(points[1] - points[5]) + np.linalg.norm(points[2] - points[4])
@@ -173,8 +193,8 @@ def _mediapipe_geometry(image: np.ndarray) -> FaceGeometry | None:
 
     left_ear = _eye_aspect_ratio(points[list(LEFT_EYE)])
     right_ear = _eye_aspect_ratio(points[list(RIGHT_EYE)])
-    eye_left = tuple(points[[LEFT_EYE[0], LEFT_EYE[3]]].mean(axis=0))
-    eye_right = tuple(points[[RIGHT_EYE[0], RIGHT_EYE[3]]].mean(axis=0))
+    eye_left = _point(points[[LEFT_EYE[0], LEFT_EYE[3]]].mean(axis=0))
+    eye_right = _point(points[[RIGHT_EYE[0], RIGHT_EYE[3]]].mean(axis=0))
 
     gap = float(np.linalg.norm(points[MOUTH_INNER[0]] - points[MOUTH_INNER[1]]))
     mouth_width = float(np.linalg.norm(points[MOUTH_CORNERS[0]] - points[MOUTH_CORNERS[1]]))
@@ -227,10 +247,8 @@ def _cascade_geometry(image: np.ndarray) -> FaceGeometry | None:
     # Haar fires on random texture: only a detection comparable in size to the subject
     # counts as a second person, otherwise a patterned background raises a false alarm.
     companions = sum(1 for face in faces if face[2] * face[3] >= 0.40 * w * h)
-    # The frontal cascade box runs from mid-forehead to about the chin; the crown guess
-    # is deliberately generous because refine_crown() measures it properly afterwards.
+    # The frontal cascade box runs from mid-forehead to about the chin.
     chin_y = y + 0.98 * h
-    crown_y = y - 0.35 * h
 
     eye_detector = _cascade("haarcascade_eye.xml")
     eyes = (
@@ -251,6 +269,15 @@ def _cascade_geometry(image: np.ndarray) -> FaceGeometry | None:
         eye_right = (x + 0.70 * w, y + 0.40 * h)
         eyes_open = UNKNOWN
 
+    # Crown measured up from the eye line rather than taken as a fixed share of the
+    # cascade box. The old `y - 0.35h` was inflating the head by about a fifth, which put
+    # the eye line at 50.3 % of the frame — just outside the ANTS band — on *every*
+    # photograph this path graded. The clamp keeps a stray eye detection from producing an
+    # absurd skull.
+    eye_y = (eye_left[1] + eye_right[1]) / 2.0
+    head = min(max((chin_y - eye_y) / EYE_TO_CHIN_RATIO, 0.9 * h), 1.5 * h)
+    crown_y = chin_y - head
+
     return FaceGeometry(
         box=(int(x), int(y), int(w), int(h)), eye_left=eye_left, eye_right=eye_right,
         chin_y=chin_y, crown_y=crown_y, detector="haar", face_count=companions,
@@ -267,12 +294,17 @@ def refine_crown(image: np.ndarray, geometry: FaceGeometry) -> float:
     from above until the central band stops matching the background colour measures the
     skull instead of assuming it.  The answer is clamped around the guess: on a busy
     background the scan degrades to the estimate rather than to nonsense.
+
+    The scan finds the top of the *hair*, not of the skull, so it may only travel
+    CROWN_REFINE_LIMIT of a head above the guess.  Unbounded, a voluminous cut was read as
+    a fifth of extra skull, which stretched the crop past the edge of the source and
+    pushed the eye line out of the ANTS band.
     """
     height, width = image.shape[:2]
     x, y, w, h = geometry.box
     guess = geometry.crown_y
     x0, x1 = max(0, x + w // 4), min(width, x + 3 * w // 4)
-    search_top = max(0, int(guess - 0.40 * h))
+    search_top = max(0, int(guess - CROWN_REFINE_LIMIT * geometry.head_height))
     search_bottom = min(height, int(y + 0.25 * h))  # certainly forehead by then
     if x1 - x0 < 8 or search_bottom - search_top < 8:
         return guess
@@ -370,6 +402,24 @@ def extract(image: np.ndarray, box: tuple[float, float, float, float]) -> tuple[
     return crop, max(0.0, fraction)
 
 
+def visible_head_ratio(geometry: FaceGeometry, box: tuple[float, float, float, float], source: np.ndarray) -> float:
+    """Share of the frame filled by the part of the head the source actually holds.
+
+    Comparing the measured head against the crop it produced is circular — crop_box()
+    sizes that crop as `head / HEAD_RATIO_TARGET`, so the answer is always the target and
+    the criterion grades nothing.  What does vary is how much of the head the photograph
+    contains: a shot cropped above the skull or below the chin yields less than a whole
+    one, and that is what puts the export outside the ANTS band.
+    """
+    left, top, crop_w, crop_h = box
+    if crop_h <= 0:
+        return 0.0
+    height = source.shape[0]
+    visible_top = max(geometry.crown_y, 0.0, top)
+    visible_bottom = min(geometry.chin_y, float(height), top + crop_h)
+    return max(0.0, visible_bottom - visible_top) / crop_h
+
+
 def _border_colour(image: np.ndarray) -> np.ndarray:
     """Median colour of the outer frame, i.e. the studio background of the shot."""
     height, width = image.shape[:2]
@@ -412,6 +462,25 @@ def background_stats(image: np.ndarray) -> tuple[float, float]:
         grey[top_band:shoulder_line, -band:].ravel(),
     ])
     return float(samples.mean()), float(samples.std())
+
+
+def face_exposure(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> float:
+    """Median grey level of the face, in this image's own coordinates.
+
+    Measured over the whole frame instead, the criterion grades the background: once
+    flatten_background() has painted its 242 grey over more than half the pixels, the
+    median *is* that grey and the photograph fails on brightness however well exposed the
+    subject is.  Without a face box there is nothing better than the full frame.
+    """
+    grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if face_box is not None:
+        height, width = grey.shape[:2]
+        x, y, w, h = face_box
+        x0, y0 = max(0, int(x)), max(0, int(y))
+        x1, y1 = min(width, int(x + w)), min(height, int(y + h))
+        if x1 - x0 >= 8 and y1 - y0 >= 8:
+            grey = grey[y0:y1, x0:x1]
+    return float(np.median(grey))
 
 
 def flatten_background(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> np.ndarray:
@@ -460,10 +529,9 @@ def _band(value: float, low: float, high: float) -> str:
 def build_checks(
     geometry: FaceGeometry | None, export: np.ndarray, data: bytes,
     padding: float, background: tuple[float, float], sharpness: float,
-    head_ratio: float, eye_level: float,
+    head_ratio: float, eye_level: float, exposure: float,
 ) -> list[Check]:
     height, width = export.shape[:2]
-    exposure = float(np.median(cv2.cvtColor(export, cv2.COLOR_BGR2GRAY)))
     ratio_ok = (
         width >= OUT_WIDTH and height >= OUT_HEIGHT
         and abs((width / height) / PHOTO_RATIO - 1) <= RATIO_TOLERANCE
@@ -528,15 +596,16 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
     box = crop_box(corrected, geometry, override)
     crop, padding = extract(corrected, box)
 
+    face_in_crop = None
+    if geometry is not None:
+        x, y, w, h = geometry.box
+        face_in_crop = (int(x - box[0]), int(y - box[1]), w, h)  # crop coordinates
+
     replaced = False
     if flatten != "never":
         mean, deviation = background_stats(crop)
         if flatten == "always" or deviation > BACKGROUND_STD_MAX or mean < BACKGROUND_MIN_LEVEL:
-            face_box = None
-            if geometry is not None:
-                x, y, w, h = geometry.box
-                face_box = (int(x - box[0]), int(y - box[1]), w, h)  # crop coordinates
-            candidate = flatten_background(crop, face_box)
+            candidate = flatten_background(crop, face_in_crop)
             # A segmentation that did not actually even out the background is discarded:
             # shipping a badly cut photograph would be worse than the busy original.
             if flatten == "always" or background_stats(candidate)[1] < deviation:
@@ -550,11 +619,19 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
     encoded, quality = imaging.encode_jpeg(export, MAX_BYTES)
 
     crop_h = box[3]
-    head_ratio = geometry.head_height / crop_h if geometry and crop_h else 0.0
+    head_ratio = visible_head_ratio(geometry, box, source) if geometry else 0.0
     eye_level = ((geometry.eye_centre[1] - box[1]) / crop_h) if geometry and crop_h else 0.0
     sharpness = imaging.laplacian_sharpness(export)
+    # The face box travels from crop pixels to export pixels with the export resize.
+    face_in_export = None
+    if face_in_crop is not None:
+        scale_x, scale_y = export.shape[1] / crop.shape[1], export.shape[0] / crop.shape[0]
+        x, y, w, h = face_in_crop
+        face_in_export = (x * scale_x, y * scale_y, w * scale_x, h * scale_y)
+    exposure = face_exposure(export, face_in_export)
     checks = build_checks(
-        geometry, export, encoded, padding, background_stats(export), sharpness, head_ratio, eye_level,
+        geometry, export, encoded, padding, background_stats(export), sharpness,
+        head_ratio, eye_level, exposure,
     )
     metadata = {
         "detector": geometry.detector if geometry else "none",
@@ -564,6 +641,7 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         "tilt_degrees": round(geometry.roll_degrees, 2) if geometry else None,
         "padding_fraction": round(padding, 4),
         "background_replaced": replaced,
+        "face_exposure": round(exposure, 1),
         "sharpness": round(sharpness, 1),
         "jpeg_quality": quality,
         "crop_box": [round(value) for value in box],
