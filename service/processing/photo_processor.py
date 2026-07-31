@@ -64,11 +64,33 @@ MOUTH_GAP_MAX = 0.15  # inner lip gap over mouth width
 # Calibrated on the sample photographs: a studio grey with a soft vignette measures ~23,
 # a textured wall or a bedsheet 30 to 58. Revisit both figures as the sample grows.
 BACKGROUND_STD_MAX, BACKGROUND_MIN_LEVEL = 25.0, 130.0
+# "Le fond doit être uni, de couleur claire (bleu clair ou gris clair par exemple). Le
+# fond blanc est interdit." — service-public.fr F10619. A background brighter than this
+# reads as that forbidden white, so it is refused at the top of the band as well as at
+# the bottom.
+BACKGROUND_MAX_LEVEL = 245.0
 SHARPNESS_MIN = 45.0
+# "Elle ne doit être ni surexposée ni sous-exposée [...] correctement contrastée"
+# (service-public.fr F10619). Graded on clipping and contrast rather than on absolute skin
+# brightness: complexion legitimately spans the scale, and an absolute threshold refuses
+# dark skin for being dark. Every correctly lit sample sits at 78–124 median, under 0.6 %
+# clipped at either end, and 128–180 of spread.
+EXPOSURE_CLIP_MAX = 2.0  # per cent of face pixels pinned at either end of the scale
+EXPOSURE_SPREAD_MIN = 60.0  # p95 − p5 across the face
+EXPOSURE_MEDIAN_MIN, EXPOSURE_MEDIAN_MAX = 40.0, 225.0  # catastrophes only
 # Share of the crop that may be invented when the source is framed too tightly. Kept
 # low: replicated pixels stay visible, and an ANTS agent reads them as a background flaw.
 PADDING_LIMIT = 0.02
-UNIFORM_BACKGROUND = (242, 242, 242)  # light neutral grey, accepted by ANTS
+# BGR. A light blue-grey, which is one of the two shades service-public.fr names outright
+# ("bleu clair ou gris clair"). Deliberately not the near-white 242 grey this used to be:
+# that reads as the white background the same page forbids.
+UNIFORM_BACKGROUND = (227, 217, 206)
+# The segmentation alpha is soft over several pixels. Steepening it and then feathering it
+# back by roughly a pixel gives a cut edge that neither haloes nor looks scissored.
+EDGE_SHARPNESS, EDGE_FEATHER = 6.0, 1.2
+# Share of the face box the cut must keep: below this the segmentation ate the subject,
+# and the original photograph is preferable to a mutilated one.
+SUBJECT_INTACT_MIN = 0.90
 
 # MediaPipe Face Mesh indices (468-point topology).
 CHIN, FOREHEAD = 152, 10
@@ -80,6 +102,10 @@ MOUTH_CORNERS = (61, 291)
 _mesh_lock = threading.Lock()
 _mesh = None
 _mesh_unavailable = False
+
+_segmenter_lock = threading.Lock()
+_segmenter = None
+_segmenter_unavailable = False
 
 
 @dataclass
@@ -444,52 +470,177 @@ def normalise_exposure(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(cv2.merge((lightness, a, b)), cv2.COLOR_LAB2BGR)
 
 
-def background_stats(image: np.ndarray) -> tuple[float, float]:
-    """Mean level and dispersion where only background can be: above and beside the head.
+def background_stats(image: np.ndarray, alpha: np.ndarray | None = None) -> tuple[float, float]:
+    """Mean level and dispersion of the background.
 
-    The side bands stop at 60 % of the height on purpose.  Lower than that they run into
-    the shoulders, and clothing would then be measured as a non-uniform background — it
-    made every real photograph fail this criterion, studio shots included.
+    Given the cut-out alpha, the statistic is read exactly where the subject is not, which
+    is the only reliable way to do it: every geometric approximation eventually measures
+    the sitter.  A strip across the top reads a bun or an afro as background dispersion —
+    crop_box() anchors the *crown*, and hair legitimately stands above it, since ANTS
+    measures the skull and not the haircut.  Side bands fare no better on a wide curly
+    cut.  Both mistakes turned flawless cut-outs into σ 28 to 79.
+
+    Without a mask — no détourage, or one that failed — it falls back to two side bands
+    stopping at 60 % of the height, below which they would run into the shoulders and grade
+    clothing as background.
     """
-    height, width = image.shape[:2]
     grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = grey.shape[:2]
+    if alpha is not None:
+        scaled = cv2.resize(alpha, (width, height), interpolation=cv2.INTER_LINEAR)
+        samples = grey[scaled < 0.1]
+        if samples.size >= 64:
+            return float(samples.mean()), float(samples.std())
     band = max(2, width // 12)
-    top_band = max(2, height // 8)
-    shoulder_line = max(top_band + 1, int(0.60 * height))
+    shoulder_line = max(2, int(0.60 * height))
     samples = np.concatenate([
-        grey[:top_band].ravel(),
-        grey[top_band:shoulder_line, :band].ravel(),
-        grey[top_band:shoulder_line, -band:].ravel(),
+        grey[:shoulder_line, :band].ravel(), grey[:shoulder_line, -band:].ravel(),
     ])
     return float(samples.mean()), float(samples.std())
 
 
-def face_exposure(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> float:
-    """Median grey level of the face, in this image's own coordinates.
+@dataclass
+class ExposureStats:
+    """How the face itself is lit, read independently of the sitter's complexion."""
+
+    median: float
+    blown: float  # per cent of pixels pinned at the top of the scale
+    crushed: float  # per cent pinned at the bottom
+    spread: float  # p95 − p5
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.blown <= EXPOSURE_CLIP_MAX
+            and self.crushed <= EXPOSURE_CLIP_MAX
+            and self.spread >= EXPOSURE_SPREAD_MIN
+            and EXPOSURE_MEDIAN_MIN <= self.median <= EXPOSURE_MEDIAN_MAX
+        )
+
+    @property
+    def detail(self) -> str:
+        return (f"médiane {self.median:.0f}, écrêtage {self.blown:.1f}/{self.crushed:.1f} %,"
+                f" étendue {self.spread:.0f}")
+
+
+def face_exposure(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> ExposureStats:
+    """How the face is exposed, in this image's own coordinates.
 
     Measured over the whole frame instead, the criterion grades the background: once
-    flatten_background() has painted its 242 grey over more than half the pixels, the
-    median *is* that grey and the photograph fails on brightness however well exposed the
-    subject is.  Without a face box there is nothing better than the full frame.
+    flatten_background() has painted its plain colour over more than half the pixels, the
+    median *is* that colour and the photograph fails on brightness however well exposed
+    the subject is.  The box is taken in by a fifth on each side so that its corners —
+    which are background, not skin — cannot drag the reading towards whatever is behind
+    the sitter either.  Without a face box there is nothing better than the full frame.
     """
     grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     if face_box is not None:
         height, width = grey.shape[:2]
         x, y, w, h = face_box
-        x0, y0 = max(0, int(x)), max(0, int(y))
-        x1, y1 = min(width, int(x + w)), min(height, int(y + h))
+        x0, y0 = max(0, int(x + 0.2 * w)), max(0, int(y + 0.2 * h))
+        x1, y1 = min(width, int(x + 0.8 * w)), min(height, int(y + 0.8 * h))
         if x1 - x0 >= 8 and y1 - y0 >= 8:
             grey = grey[y0:y1, x0:x1]
-    return float(np.median(grey))
+    low, high = np.percentile(grey, (5, 95))
+    return ExposureStats(
+        median=float(np.median(grey)),
+        blown=float((grey >= 250).mean() * 100),
+        crushed=float((grey <= 5).mean() * 100),
+        spread=float(high - low),
+    )
 
 
-def flatten_background(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> np.ndarray:
-    """Replace a busy background with a uniform light grey.
+def _selfie_segmenter():
+    """One cached selfie-segmentation graph, or None when MediaPipe is not installed.
 
-    `face_box` is expressed in this image's own coordinates, not the source frame's.
-    GrabCut runs on a downscaled copy — the cut only needs to be accurate to a few
-    source pixels once the mask is feathered — and the subject rectangle grows from the
-    face down to the bottom edge so the shoulders stay inside it.
+    Like the Face Mesh it is stateful, costly to build and not thread-safe, so it is
+    cached behind `_segmenter_lock`.  The weights travel inside the wheel: no download
+    happens at runtime, which matters on a sealed container.
+    """
+    global _segmenter, _segmenter_unavailable
+    if _segmenter is not None or _segmenter_unavailable:
+        return _segmenter
+    try:
+        import mediapipe as mp  # noqa: PLC0415 - optional heavy dependency
+    except Exception:
+        _segmenter_unavailable = True
+        return None
+    # model_selection 0 is the general 256×256 model; 1 is a 144×256 landscape variant
+    # meant for video calls, and it loses hair detail on a portrait crop.
+    _segmenter = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=0)
+    return _segmenter
+
+
+def person_mask(image: np.ndarray) -> np.ndarray | None:
+    """Soft 0–1 alpha over the subject, from MediaPipe's selfie segmentation.
+
+    None when MediaPipe is absent or the cut is implausible, so that the caller falls
+    back to GrabCut instead of compositing a mask that kept the wall and dropped the
+    sitter.
+    """
+    segmenter = _selfie_segmenter()
+    if segmenter is None:
+        return None
+    height, width = image.shape[:2]
+    with _segmenter_lock:
+        result = segmenter.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    mask = getattr(result, "segmentation_mask", None)
+    if mask is None:
+        return None
+    alpha = cv2.resize(np.asarray(mask, np.float32), (width, height), interpolation=cv2.INTER_LINEAR)
+    # On an ANTS crop the sitter fills most of the frame; anything outside this band is a
+    # cut that failed rather than an unusual portrait.
+    if not 0.15 <= float((alpha > 0.5).mean()) <= 0.95:
+        return None
+    return alpha
+
+
+def _subject_intact(alpha: np.ndarray, face_box: tuple[int, int, int, int]) -> bool:
+    """True when the cut kept the face itself, whatever it did with the rest."""
+    height, width = alpha.shape[:2]
+    x, y, w, h = (int(value) for value in face_box)
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return True  # nothing to verify against; the coverage band already had its say
+    return float(alpha[y0:y1, x0:x1].mean()) >= SUBJECT_INTACT_MIN
+
+
+def flatten_background(
+    image: np.ndarray, face_box: tuple[int, int, int, int] | None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Cut the subject out and set it on the regulation background.
+
+    ANTS wants a plain, light background with no shadow cast on it, so the sitter is
+    composited onto UNIFORM_BACKGROUND rather than the original being merely evened out.
+    Segmentation comes from MediaPipe when it is installed — it follows hair and
+    shoulders, which a rectangle-initialised GrabCut cannot — and falls back to GrabCut
+    otherwise.  `face_box` is in this image's own coordinates, not the source frame's.
+
+    Returns the composited image and the alpha it used, so that background_ok can be
+    graded where the subject actually is not.  On failure it hands back the very same
+    array it was given, and no alpha.
+    """
+    alpha = person_mask(image)
+    if alpha is None:
+        alpha = _grabcut_alpha(image, face_box)
+    if alpha is None:
+        return image, None
+    if face_box is not None and not _subject_intact(alpha, face_box):
+        return image, None
+    alpha = np.clip((alpha - 0.5) * EDGE_SHARPNESS + 0.5, 0.0, 1.0)
+    alpha = cv2.GaussianBlur(alpha, (0, 0), EDGE_FEATHER)
+    plain = np.full_like(image, UNIFORM_BACKGROUND, dtype=np.uint8)
+    composited = np.clip(image * alpha[..., None] + plain * (1 - alpha[..., None]), 0, 255).astype(np.uint8)
+    return composited, alpha
+
+
+def _grabcut_alpha(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> np.ndarray | None:
+    """Fallback segmentation: GrabCut on a downscaled copy, as a 0–1 alpha.
+
+    The cut only needs to be accurate to a few source pixels once the mask is feathered,
+    and the subject rectangle grows from the face down to the bottom edge so that the
+    shoulders stay inside it.
     """
     height, width = image.shape[:2]
     scale = 320.0 / max(height, width)
@@ -505,20 +656,17 @@ def flatten_background(image: np.ndarray, face_box: tuple[int, int, int, int] | 
     else:
         rect = (small_w // 6, small_h // 8, small_w * 2 // 3, small_h * 7 // 8)
     if rect[2] < 10 or rect[3] < 10:
-        return image
+        return None
 
     mask = np.zeros(small.shape[:2], np.uint8)
     try:
         cv2.grabCut(small, mask, rect, np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64), 3, cv2.GC_INIT_WITH_RECT)
     except cv2.error:
-        return image
+        return None
     foreground = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
     if foreground.mean() < 25:  # the cut kept almost nothing: leave the photo untouched
-        return image
-    alpha = cv2.GaussianBlur(cv2.resize(foreground, (width, height), interpolation=cv2.INTER_LINEAR), (0, 0), 2.0)
-    alpha = (alpha.astype(np.float32) / 255.0)[..., None]
-    plain = np.full_like(image, UNIFORM_BACKGROUND, dtype=np.uint8)
-    return np.clip(image * alpha + plain * (1 - alpha), 0, 255).astype(np.uint8)
+        return None
+    return cv2.resize(foreground, (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
 
 
 # ── Checks ──────────────────────────────────────────────────────────────────────────
@@ -529,7 +677,7 @@ def _band(value: float, low: float, high: float) -> str:
 def build_checks(
     geometry: FaceGeometry | None, export: np.ndarray, data: bytes,
     padding: float, background: tuple[float, float], sharpness: float,
-    head_ratio: float, eye_level: float, exposure: float,
+    head_ratio: float, eye_level: float, exposure: ExposureStats,
 ) -> list[Check]:
     height, width = export.shape[:2]
     ratio_ok = (
@@ -560,10 +708,12 @@ def build_checks(
         Check("framing_ok", "Cadrage complet dans la photo source",
               PASS if padding <= PADDING_LIMIT else FAIL,
               f"{padding:.1%} de marge ajoutée" if padding else ""),
-        Check("background_ok", "Fond clair et uniforme",
-              PASS if deviation <= BACKGROUND_STD_MAX and mean >= BACKGROUND_MIN_LEVEL else FAIL,
+        Check("background_ok", "Fond uni et clair, non blanc",
+              PASS if deviation <= BACKGROUND_STD_MAX
+              and BACKGROUND_MIN_LEVEL <= mean <= BACKGROUND_MAX_LEVEL else FAIL,
               f"niveau {mean:.0f}, écart-type {deviation:.1f}"),
-        Check("exposure_ok", "Luminosité correcte", _band(exposure, 100, 210), f"médiane {exposure:.0f}"),
+        Check("exposure_ok", "Luminosité et contraste corrects",
+              PASS if exposure.ok else FAIL, exposure.detail),
         Check("sharpness_ok", "Netteté suffisante", PASS if sharpness >= SHARPNESS_MIN else FAIL,
               f"variance {sharpness:.0f}"),
         Check("dimensions_ok", f"Dimensions ≥ {OUT_WIDTH}×{OUT_HEIGHT} au ratio 35:45",
@@ -583,7 +733,7 @@ def _measure_detail(geometry: FaceGeometry | None, keys: tuple[str, ...]) -> str
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────────
-def process(data: bytes, override: CropOverride | None = None, flatten: str = "auto") -> ProcessedImage:
+def process(data: bytes, override: CropOverride | None = None, flatten: str = "always") -> ProcessedImage:
     """Crop, correct and grade one identity photograph."""
     override = override or CropOverride()
     try:
@@ -601,15 +751,21 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         x, y, w, h = geometry.box
         face_in_crop = (int(x - box[0]), int(y - box[1]), w, h)  # crop coordinates
 
-    replaced = False
+    replaced, cut_alpha = False, None
     if flatten != "never":
         mean, deviation = background_stats(crop)
-        if flatten == "always" or deviation > BACKGROUND_STD_MAX or mean < BACKGROUND_MIN_LEVEL:
-            candidate = flatten_background(crop, face_in_crop)
-            # A segmentation that did not actually even out the background is discarded:
-            # shipping a badly cut photograph would be worse than the busy original.
-            if flatten == "always" or background_stats(candidate)[1] < deviation:
-                crop, replaced = candidate, True
+        # "always" is the deployed setting: ANTS wants a plain light background with no
+        # shadow behind the sitter, and a photograph taken at home never has one. "auto"
+        # remains for tuning, and only intervenes when the original is out of spec.
+        if flatten == "always" or deviation > BACKGROUND_STD_MAX or not (
+            BACKGROUND_MIN_LEVEL <= mean <= BACKGROUND_MAX_LEVEL
+        ):
+            candidate, alpha = flatten_background(crop, face_in_crop)
+            # flatten_background() hands back the very same array when it could not cut
+            # the subject out safely; shipping a mutilated photograph would be worse than
+            # the busy original, and background_ok then reports the failure to the panel.
+            if candidate is not crop:
+                crop, replaced, cut_alpha = candidate, True, alpha
 
     # Export at the sanctioned ratio: twice the minimum when the source can feed it.
     factor = 2 if crop.shape[0] >= 2 * OUT_HEIGHT else 1
@@ -630,7 +786,7 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         face_in_export = (x * scale_x, y * scale_y, w * scale_x, h * scale_y)
     exposure = face_exposure(export, face_in_export)
     checks = build_checks(
-        geometry, export, encoded, padding, background_stats(export), sharpness,
+        geometry, export, encoded, padding, background_stats(export, cut_alpha), sharpness,
         head_ratio, eye_level, exposure,
     )
     metadata = {
@@ -641,7 +797,9 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         "tilt_degrees": round(geometry.roll_degrees, 2) if geometry else None,
         "padding_fraction": round(padding, 4),
         "background_replaced": replaced,
-        "face_exposure": round(exposure, 1),
+        "face_exposure": round(exposure.median, 1),
+        "face_clipping": [round(exposure.blown, 2), round(exposure.crushed, 2)],
+        "face_spread": round(exposure.spread, 1),
         "sharpness": round(sharpness, 1),
         "jpeg_quality": quality,
         "crop_box": [round(value) for value in box],

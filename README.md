@@ -91,20 +91,34 @@ son comportement actuel.
 | `MAKE_WEBHOOK_TOKEN` | — | Envoyé en `Authorization: Bearer …` |
 | `STORAGE_DIR` | `/data` (Docker) | Images et base SQLite |
 | `PURGE_AFTER_DAYS` | `30` | Purge des dossiers décidés (RGPD) |
-| `FLATTEN_BACKGROUND` | `auto` | `auto`, `always` ou `never` pour le détourage du fond |
+| `FLATTEN_BACKGROUND` | `always` | `always`, `auto` ou `never` pour le détourage du fond |
 | `PUBLIC_BASE_URL` | — | Préfixe du lien de contrôle renvoyé à Make |
 
 ### Contrôles de la photo
 
-Géométrie 35 × 45 mm : hauteur de tête 70–80 % du cadre, ligne des yeux à 29–45 % du
+Géométrie 35 × 45 mm : hauteur de tête 70–80 % du cadre, ligne des yeux à 33–50 % du
 haut, export au ratio 414 × 532 (ou 828 × 1064) en JPEG sous 2 Mo. S'y ajoutent
 l'inclinaison de la tête, les yeux ouverts, la bouche fermée, l'uniformité et la clarté
-du fond, la luminosité, la netteté et la présence d'un seul visage.
+du fond, l'exposition, la netteté et la présence d'un seul visage.
 
-Les repères viennent de **MediaPipe Face Mesh** s'il est installé, sinon des cascades de
-Haar fournies par OpenCV. Un critère que le détecteur disponible ne sait pas mesurer est
-affiché **« indéterminé » (pastille grise)** et exclu du score : il n'est jamais présenté
-comme conforme. `/api/health` indique le détecteur réellement actif.
+**Détourage systématique.** Le sujet est découpé puis reposé sur un fond uni bleu-gris
+clair. La couleur est imposée par le texte : « le fond doit être uni, de couleur claire
+(bleu clair ou gris clair par exemple). **Le fond blanc est interdit** »
+([service-public.fr F10619](https://www.service-public.gouv.fr/particuliers/vosdroits/F10619)),
+d'où un `UNIFORM_BACKGROUND` volontairement éloigné du blanc et un contrôle de fond borné
+des deux côtés. La segmentation vient de **MediaPipe Selfie Segmentation** ; GrabCut ne
+sert plus que de repli, et une garde annule le détourage plutôt que d'entamer le visage.
+
+**Exposition.** Notée sur l'écrêtage et le contraste du visage, pas sur sa clarté absolue :
+la carnation couvre légitimement toute l'échelle, et un seuil absolu refuserait une peau
+foncée pour sa seule couleur. Le texte demande une photo « ni surexposée ni sous-exposée »
+et « correctement contrastée ».
+
+Les repères viennent de **MediaPipe Face Mesh**, désormais une dépendance ferme ; les
+cascades de Haar fournies par OpenCV ne subsistent que comme repli de développement, sans
+détourage ni mesure de la bouche. Un critère que le détecteur disponible ne sait pas
+mesurer est affiché **« indéterminé » (pastille grise)** et exclu du score : il n'est jamais
+présenté comme conforme. `/api/health` indique le détecteur réellement actif.
 
 ### Lancer et tester en local
 
@@ -121,8 +135,9 @@ INGEST_API_KEY=dev ADMIN_USER=ctrl ADMIN_PASSWORD=ctrl py -m uvicorn service.mai
 
 - Les seuils (netteté, uniformité du fond, ouverture des yeux) sont des heuristiques
   locales : elles ne valent pas acceptation par l'ANTS, d'où le contrôle humain.
-- Le remplacement de fond par GrabCut n'est conservé que s'il rend réellement le fond
-  plus uniforme ; sinon la photo d'origine est gardée telle quelle.
+- Le détourage est abandonné, et la photo d'origine conservée, si la découpe entame le
+  visage. Sans MediaPipe le repli GrabCut échoue à cette garde sur la plupart des
+  portraits : le service ne détoure alors pas, et `background_ok` le signale au contrôleur.
 - L'estimation du sommet du crâne est anthropométrique (les repères s'arrêtent au front) :
   c'est une approximation, que le contrôleur peut corriger avec le recadrage manuel.
 - `opencv-python-headless` est épinglé sous 5.0 : OpenCV 5 a supprimé `CascadeClassifier`
