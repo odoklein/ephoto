@@ -60,7 +60,8 @@ def process(data: bytes, filename: str = "signature.png", max_bytes: int = MAX_B
     ]
     metadata = {
         "processing_mode": row["processing_mode"],
-        "inverted": row["processing_mode"].endswith("+inverted"),
+        "inverted": "inverted" in row["processing_mode"].split("+"),
+        "presentation_bars_trimmed": "trimmed_bars" in row["processing_mode"].split("+"),
         "raw_density": row["raw_density"],
         "output_density": row["output_density"],
         "raw_components": row["raw_components"],

@@ -102,6 +102,27 @@ def load_bgr(path: Path) -> np.ndarray:
     return image
 
 
+def trim_presentation_bars(image: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Remove large, solid black bars framing an otherwise usable signature image.
+
+    Phone screenshots and some export tools letterbox a white signature sheet between
+    black bands.  Those bands are not handwriting, but they can dominate local
+    illumination estimation and hide the actual ink.  Only near-solid bars touching
+    *both* horizontal edges are removed; a normal dark-background signature is left
+    unchanged and still goes through polarity detection.
+    """
+    grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    dark_row = (grey <= 16).mean(axis=1) >= 0.98
+    height = image.shape[0]
+    top = next((index for index, dark in enumerate(dark_row) if not dark), height)
+    bottom = next((index for index, dark in enumerate(dark_row[::-1]) if not dark), height)
+    bottom = height - bottom
+    minimum_bar = max(8, height // 100)
+    if top < minimum_bar or height - bottom < minimum_bar or bottom - top < max(32, height // 5):
+        return image, False
+    return image[top:bottom].copy(), True
+
+
 def normalise_polarity(image: np.ndarray) -> tuple[np.ndarray, bool]:
     """Return the sheet with ink darker than its background, and whether it was flipped.
 
@@ -367,7 +388,8 @@ def process_files(inputs: Iterable[Path], output_dir: Path, margin: int, max_byt
     for source in inputs:
         target = output_dir / f"{source.stem}_ephoto.png"
         try:
-            image, inverted = normalise_polarity(load_bgr(source))
+            image, bars_trimmed = trim_presentation_bars(load_bgr(source))
+            image, inverted = normalise_polarity(image)
             strength = ink_strength(image)
             raw = basic_raw_mask(image, strength)
             mask, mode = ink_mask(image, strength, raw)
@@ -375,7 +397,9 @@ def process_files(inputs: Iterable[Path], output_dir: Path, margin: int, max_byt
             target.write_bytes(png_bytes(result))
             # The export is black on white either way; the report still says which
             # sheets arrived as light ink on a dark background.
-            label = f"{mode}+inverted" if inverted else mode
+            label = "+".join(part for part, enabled in (
+                (mode, True), ("inverted", inverted), ("trimmed_bars", bars_trimmed),
+            ) if enabled)
             rows.append(evaluate(source.name, target, raw, raw_box, max_bytes, label, geometry))
         except Exception as exc:
             rows.append(ReportRow(source.name, "fail", "fail", "fail", "fail", "fail", 0, str(exc), "", None, None, None, None, "error"))
