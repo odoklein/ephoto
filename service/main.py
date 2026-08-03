@@ -251,7 +251,9 @@ def admin_root(_: str = Depends(require_reviewer)) -> RedirectResponse:
 
 
 @api.get("/admin/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, show: str = "open", reviewer: str = Depends(require_reviewer)) -> Response:
+def dashboard(
+    request: Request, show: str = "open", q: str = "", reviewer: str = Depends(require_reviewer)
+) -> Response:
     purge_expired()
     statuses = {
         "open": database.OPEN_STATUSES,
@@ -261,9 +263,9 @@ def dashboard(request: Request, show: str = "open", reviewer: str = Depends(requ
     return templates.TemplateResponse(
         request, "dashboard.html",
         {
-            "records": database.listing(settings.database_path, statuses),
+            "records": database.listing(settings.database_path, statuses, query=q),
             "counts": database.counts(settings.database_path),
-            "show": show, "reviewer": reviewer, "settings": settings,
+            "show": show, "q": q, "reviewer": reviewer, "settings": settings,
         },
     )
 

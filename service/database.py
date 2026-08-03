@@ -91,13 +91,24 @@ def get(path: Path, submission_id: str) -> dict | None:
     return _decode(row) if row else None
 
 
-def listing(path: Path, statuses: tuple[str, ...] = OPEN_STATUSES, limit: int = 200) -> list[dict]:
+def listing(
+    path: Path, statuses: tuple[str, ...] = OPEN_STATUSES, limit: int = 200, query: str = ""
+) -> list[dict]:
+    """Return the newest dossiers for a queue view, optionally narrowed by a text search."""
     placeholders = ",".join("?" * len(statuses))
+    filters = "status IN (" + placeholders + ")"
+    params: list[object] = [*statuses]
+    if query.strip():
+        # Customer is JSON in SQLite. Searching it covers names, emails, and source
+        # system customer data without introducing a dynamic SQL fragment.
+        needle = f"%{query.strip()}%"
+        filters += " AND (id LIKE ? OR source_ref LIKE ? OR customer LIKE ?)"
+        params.extend((needle, needle, needle))
     with connect(path) as connection:
         rows = connection.execute(
-            f"SELECT * FROM submissions WHERE status IN ({placeholders})"
+            f"SELECT * FROM submissions WHERE {filters}"
             " ORDER BY datetime(created_at) DESC LIMIT ?",
-            (*statuses, limit),
+            (*params, limit),
         ).fetchall()
     return [_decode(row) for row in rows]
 

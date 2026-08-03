@@ -176,6 +176,8 @@ def main() -> int:
         board = client.get("/admin/dashboard", auth=auth)
         check("dashboard affiche le dossier", board.status_code == 200 and first in board.text)
         check("dashboard montre le client", "camille@example.fr" in board.text)
+        searched_board = client.get("/admin/dashboard?show=open&q=camille%40example.fr", auth=auth)
+        check("recherche du dashboard", searched_board.status_code == 200 and first in searched_board.text)
         detail = client.get(f"/admin/submissions/{first}", auth=auth)
         check("fiche dossier rendue", detail.status_code == 200 and "Accepter et transmettre" in detail.text)
         check("aucun résidu de gabarit", "{{" not in detail.text and ">None<" not in detail.text)

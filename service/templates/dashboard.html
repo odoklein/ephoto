@@ -1,71 +1,116 @@
 {% extends "base.html" %}
 {% import "macros.html" as ui %}
-{% block title %}Dossiers en attente{% endblock %}
+{% block title %}File de contrôle{% endblock %}
 
 {% block content %}
-<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+{% set open_total = counts.get('pending', 0) + counts.get('processing', 0) %}
+{% set decided_total = counts.get('accepted', 0) + counts.get('rejected', 0) + counts.get('error', 0) %}
+
+<div class="mb-8 flex flex-wrap items-end justify-between gap-5">
   <div>
-    <h1 class="text-2xl font-semibold text-slate-900">Dossiers</h1>
-    <p class="mt-1 text-sm text-slate-500">Photo d'identité et signature préparées automatiquement, en attente de votre décision.</p>
+    <p class="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-teal-700">File de contrôle</p>
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-950">Dossiers à traiter</h1>
+    <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">Priorisez les dossiers prêts à décider, puis consultez les transmissions et les exceptions depuis la même file.</p>
   </div>
-  <div class="flex items-center gap-3">
-  <a href="/admin/nouveau" class="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700">+ Nouveau dossier</a>
-  <nav class="flex gap-1 rounded-lg bg-white p-1 text-sm shadow-sm ring-1 ring-slate-200">
-    {% for key, label in [('open', 'À contrôler'), ('accepted', 'Transmis'), ('rejected', 'Refusés')] %}
-      <a href="/admin/dashboard?show={{ key }}"
-         class="rounded-md px-3 py-1.5 {{ 'bg-slate-900 text-white' if show == key else 'text-slate-600 hover:bg-slate-100' }}">{{ label }}</a>
-    {% endfor %}
-  </nav>
-  </div>
+  <a href="/admin/nouveau" class="rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 active:translate-y-px">Créer un dossier</a>
 </div>
 
-<div class="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-  {% for key, label in [('pending', 'À contrôler'), ('processing', 'En traitement'), ('accepted', 'Transmis'), ('rejected', 'Refusés')] %}
-    <div class="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <div class="text-2xl font-semibold text-slate-900">{{ counts.get(key, 0) }}</div>
-      <div class="text-xs uppercase tracking-wide text-slate-500">{{ label }}</div>
+<section aria-label="Vue d'ensemble de la file" class="mb-7 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+  <a href="/admin/dashboard?show=open" class="rounded-xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-300 {{ 'border-teal-400 ring-2 ring-teal-100' if show == 'open' else 'border-slate-200' }}">
+    <div class="flex items-start justify-between"><span class="text-sm font-medium text-slate-600">À traiter</span><span class="h-2.5 w-2.5 rounded-full bg-teal-500"></span></div>
+    <div class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ open_total }}</div>
+    <p class="mt-1 text-xs text-slate-500">{{ counts.get('pending', 0) }} prêts à contrôler</p>
+  </a>
+  <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="flex items-start justify-between"><span class="text-sm font-medium text-slate-600">En traitement</span><span class="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500"></span></div>
+    <div class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ counts.get('processing', 0) }}</div>
+    <p class="mt-1 text-xs text-slate-500">Préparation automatique en cours</p>
+  </div>
+  <a href="/admin/dashboard?show=accepted" class="rounded-xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 {{ 'border-emerald-400 ring-2 ring-emerald-100' if show == 'accepted' else 'border-slate-200' }}">
+    <div class="flex items-start justify-between"><span class="text-sm font-medium text-slate-600">Transmis</span><span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span></div>
+    <div class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ counts.get('accepted', 0) }}</div>
+    <p class="mt-1 text-xs text-slate-500">Dossiers envoyés à Ephoto</p>
+  </a>
+  <a href="/admin/dashboard?show=rejected" class="rounded-xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-300 {{ 'border-rose-400 ring-2 ring-rose-100' if show == 'rejected' else 'border-slate-200' }}">
+    <div class="flex items-start justify-between"><span class="text-sm font-medium text-slate-600">Exceptions</span><span class="h-2.5 w-2.5 rounded-full bg-rose-500"></span></div>
+    <div class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ counts.get('rejected', 0) + counts.get('error', 0) }}</div>
+    <p class="mt-1 text-xs text-slate-500">Refusés ou à résoudre</p>
+  </a>
+</section>
+
+<section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+  <div class="border-b border-slate-200 px-4 py-4 sm:px-5">
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <nav aria-label="Filtrer les dossiers" class="flex w-full gap-1 overflow-x-auto rounded-lg bg-slate-100 p-1 lg:w-auto">
+        {% for key, label, count in [('open', 'À traiter', open_total), ('accepted', 'Transmis', counts.get('accepted', 0)), ('rejected', 'Exceptions', counts.get('rejected', 0) + counts.get('error', 0))] %}
+          <a href="/admin/dashboard?show={{ key }}{% if q %}&amp;q={{ q | urlencode }}{% endif %}" class="whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium transition {{ 'bg-white text-slate-950 shadow-sm' if show == key else 'text-slate-600 hover:text-slate-950' }}">{{ label }} <span class="ml-1 text-xs {{ 'text-teal-700' if show == key else 'text-slate-400' }}">{{ count }}</span></a>
+        {% endfor %}
+      </nav>
+      <form method="get" class="flex w-full gap-2 lg:max-w-md">
+        <input type="hidden" name="show" value="{{ show }}">
+        <label class="sr-only" for="queue-search">Rechercher un dossier</label>
+        <input id="queue-search" name="q" value="{{ q }}" type="search" placeholder="Rechercher client, e-mail, commande…" class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
+        <button class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 active:translate-y-px">Rechercher</button>
+      </form>
     </div>
-  {% endfor %}
-</div>
+  </div>
 
-<div class="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
-  <table class="w-full text-left text-sm">
-    <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-      <tr>
-        <th class="px-4 py-3">Dossier</th>
-        <th class="px-4 py-3">Client</th>
-        <th class="px-4 py-3 w-40">Photo</th>
-        <th class="px-4 py-3 w-40">Signature</th>
-        <th class="px-4 py-3">Statut</th>
-        <th class="px-4 py-3"></th>
-      </tr>
-    </thead>
-    <tbody class="divide-y divide-slate-100">
-      {% for record in records %}
-        <tr class="hover:bg-slate-50">
-          <td class="px-4 py-3">
-            <div class="font-mono text-xs text-slate-900">{{ record.id }}</div>
-            <div class="text-xs text-slate-500">{{ record.created_at[:16].replace('T', ' ') }}{% if record.source_ref %} · cmd {{ record.source_ref }}{% endif %}</div>
-          </td>
-          <td class="px-4 py-3">
-            <div class="text-slate-900">{{ record.customer.get('name') or ((record.customer.get('first_name', '') ~ ' ' ~ record.customer.get('last_name', '')) | trim) or '—' }}</div>
-            <div class="text-xs text-slate-500">{{ record.customer.get('email', '') }}</div>
-          </td>
-          <td class="px-4 py-3">
-            <div class="mb-1 text-xs text-slate-600">{{ record.photo_score }} %</div>{{ ui.score_bar(record.photo_score) }}
-          </td>
-          <td class="px-4 py-3">
-            <div class="mb-1 text-xs text-slate-600">{{ record.signature_score }} %</div>{{ ui.score_bar(record.signature_score) }}
-          </td>
-          <td class="px-4 py-3">{{ ui.status_badge(record.status) }}</td>
-          <td class="px-4 py-3 text-right">
-            <a href="/admin/submissions/{{ record.id }}" class="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700">Ouvrir</a>
-          </td>
+  <div class="overflow-x-auto">
+    <table class="min-w-[900px] w-full text-left text-sm">
+      <caption class="sr-only">Liste des dossiers {{ 'correspondant à la recherche' if q else 'dans la file sélectionnée' }}</caption>
+      <thead class="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+        <tr>
+          <th scope="col" class="px-5 py-3.5">Dossier</th>
+          <th scope="col" class="px-5 py-3.5">Client</th>
+          <th scope="col" class="px-5 py-3.5">Contrôles</th>
+          <th scope="col" class="px-5 py-3.5">Statut</th>
+          <th scope="col" class="px-5 py-3.5 text-right">Action</th>
         </tr>
-      {% else %}
-        <tr><td colspan="6" class="px-4 py-10 text-center text-slate-500">Aucun dossier dans cette vue.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for record in records %}
+          {% set photo_ok = record.photo_score >= 90 %}
+          {% set signature_ok = record.signature_score >= 90 %}
+          {% set review_state = 'Prêt à décider' if photo_ok and signature_ok else 'À vérifier' %}
+          <tr class="group transition hover:bg-slate-50/80">
+            <td class="px-5 py-4 align-top">
+              <div class="font-mono text-xs font-semibold text-slate-800">{{ record.id }}</div>
+              <div class="mt-1 text-xs text-slate-500">{{ record.created_at[:16].replace('T', ' ') }}{% if record.source_ref %}<span class="mx-1 text-slate-300">•</span>Commande {{ record.source_ref }}{% endif %}</div>
+            </td>
+            <td class="px-5 py-4 align-top">
+              <div class="font-medium text-slate-900">{{ record.customer.get('name') or ((record.customer.get('first_name', '') ~ ' ' ~ record.customer.get('last_name', '')) | trim) or 'Client non renseigné' }}</div>
+              <div class="mt-1 text-xs text-slate-500">{{ record.customer.get('email', '') or 'E-mail non renseigné' }}</div>
+            </td>
+            <td class="px-5 py-4 align-top">
+              <div class="flex items-center gap-2.5">
+                <span class="inline-flex min-w-24 items-center justify-between rounded-md px-2 py-1 text-xs font-medium {{ 'bg-emerald-50 text-emerald-800' if photo_ok else 'bg-amber-50 text-amber-900' }}"><span>Photo</span><span>{{ record.photo_score }} %</span></span>
+                <span class="inline-flex min-w-24 items-center justify-between rounded-md px-2 py-1 text-xs font-medium {{ 'bg-emerald-50 text-emerald-800' if signature_ok else 'bg-amber-50 text-amber-900' }}"><span>Signature</span><span>{{ record.signature_score }} %</span></span>
+              </div>
+              {% if record.status in ('pending', 'processing') %}
+                <div class="mt-2 text-xs font-medium {{ 'text-emerald-700' if photo_ok and signature_ok else 'text-amber-800' }}">{{ review_state }}</div>
+              {% elif record.error %}
+                <div class="mt-2 max-w-sm truncate text-xs text-rose-700" title="{{ record.error }}">{{ record.error }}</div>
+              {% endif %}
+            </td>
+            <td class="px-5 py-4 align-top">{{ ui.status_badge(record.status) }}</td>
+            <td class="px-5 py-4 text-right align-top">
+              <a href="/admin/submissions/{{ record.id }}" class="inline-flex rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition group-hover:border-slate-400 group-hover:bg-white hover:!border-slate-950 hover:!bg-slate-950 hover:!text-white active:translate-y-px">Examiner<span class="ml-1.5" aria-hidden="true">→</span></a>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="5" class="px-5 py-16 text-center">
+              <p class="text-sm font-medium text-slate-700">{{ 'Aucun dossier ne correspond à votre recherche.' if q else 'Aucun dossier dans cette file.' }}</p>
+              <p class="mt-1 text-xs text-slate-500">{% if q %}<a href="/admin/dashboard?show={{ show }}" class="font-medium text-teal-700 hover:text-teal-800">Effacer la recherche</a>{% else %}Les nouveaux dossiers apparaîtront ici dès la fin du traitement.{% endif %}</p>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
+    <span>{{ records | length }} dossier{{ 's' if records | length != 1 else '' }} affiché{{ 's' if records | length != 1 else '' }}</span>
+    {% if q %}<span>Résultats pour « {{ q }} »</span>{% else %}<span>{{ decided_total }} dossier{{ 's' if decided_total != 1 else '' }} déjà décidé{{ 's' if decided_total != 1 else '' }}</span>{% endif %}
+  </div>
+</section>
 {% endblock %}
