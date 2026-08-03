@@ -91,28 +91,36 @@ son comportement actuel.
 | `MAKE_WEBHOOK_TOKEN` | — | Envoyé en `Authorization: Bearer …` |
 | `STORAGE_DIR` | `/data` (Docker) | Images et base SQLite |
 | `PURGE_AFTER_DAYS` | `30` | Purge des dossiers décidés (RGPD) |
-| `FLATTEN_BACKGROUND` | `always` | `always`, `auto` ou `never` pour le détourage du fond |
+| `FLATTEN_BACKGROUND` | `auto` | `always`, `auto` ou `never` pour le détourage du fond |
 | `PUBLIC_BASE_URL` | — | Préfixe du lien de contrôle renvoyé à Make |
 
 ### Contrôles de la photo
 
 Géométrie 35 × 45 mm : hauteur de tête 70–80 % du cadre, ligne des yeux à 33–50 % du
 haut, export au ratio 414 × 532 (ou 828 × 1064) en JPEG sous 2 Mo. S'y ajoutent
-l'inclinaison de la tête, les yeux ouverts, la bouche fermée, l'uniformité et la clarté
-du fond, l'exposition, la netteté et la présence d'un seul visage.
+l'inclinaison de la tête, les yeux ouverts, la bouche fermée, la visibilité des oreilles,
+l'uniformité et la clarté du fond, l'exposition, la netteté et la présence d'un seul
+visage.
 
-**Détourage systématique.** Le sujet est découpé puis reposé sur un fond uni bleu-gris
-clair. La couleur est imposée par le texte : « le fond doit être uni, de couleur claire
-(bleu clair ou gris clair par exemple). **Le fond blanc est interdit** »
+**Détourage conditionnel.** Une photo de studio dont le fond est déjà conforme est
+conservée telle quelle : le service n'applique plus de filtre de contraste local ni de
+détourage par défaut. Si le fond doit être remplacé, le sujet est reposé sur le gris
+verrouillé **`#d4d7d3`**. La couleur est imposée par le service : « le fond doit être uni,
+de couleur claire (bleu clair ou gris clair par exemple). **Le fond blanc est interdit** »
 ([service-public.fr F10619](https://www.service-public.gouv.fr/particuliers/vosdroits/F10619)),
-d'où un `UNIFORM_BACKGROUND` volontairement éloigné du blanc et un contrôle de fond borné
-des deux côtés. La segmentation vient de **MediaPipe Selfie Segmentation** ; GrabCut ne
-sert plus que de repli, et une garde annule le détourage plutôt que d'entamer le visage.
+d'où un `UNIFORM_BACKGROUND_HEX` unique et un contrôle de fond borné des deux côtés. La
+segmentation vient de **MediaPipe Selfie Segmentation** ; GrabCut ne sert plus que de
+repli, et une garde annule le détourage plutôt que d'entamer le visage.
 
 **Exposition.** Notée sur l'écrêtage et le contraste du visage, pas sur sa clarté absolue :
 la carnation couvre légitimement toute l'échelle, et un seuil absolu refuserait une peau
 foncée pour sa seule couleur. Le texte demande une photo « ni surexposée ni sous-exposée »
 et « correctement contrastée ».
+
+**Oreilles.** Avec Face Mesh, une vérification prudente compare les zones attendues des
+deux oreilles à la couleur de joue de la personne et confirme que le recadrage ne les a
+pas coupées. Sans Face Mesh, le statut reste « indéterminé » : le repli Haar ne permet pas
+de présenter ce critère comme conforme.
 
 Les repères viennent de **MediaPipe Face Mesh**, désormais une dépendance ferme ; les
 cascades de Haar fournies par OpenCV ne subsistent que comme repli de développement, sans

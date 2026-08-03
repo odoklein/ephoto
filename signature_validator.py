@@ -56,6 +56,11 @@ MIN_OUTPUT_STROKE_PX = 1.15
 MAX_CANVAS_SCALE = 2.0
 # Longest side used when deciding whether a sheet is light ink on a dark background.
 POLARITY_SAMPLE_PX = 512
+# Signatures commonly occupy far less than 0.5 % of a phone photo.  Tail samples must
+# therefore be sufficiently extreme to see a sparse, faint pen rather than measuring
+# only the paper residual.
+POLARITY_QUANTILE = 0.10
+INK_PEAK_QUANTILE = 99.98
 
 
 @dataclass
@@ -118,8 +123,8 @@ def normalise_polarity(image: np.ndarray) -> tuple[np.ndarray, bool]:
     grey = grey.astype(np.float32)
     local = cv2.GaussianBlur(grey, (0, 0), sigmaX=max(grey.shape[:2]) / 24.0)
     residual = grey - local
-    darker = -float(np.percentile(residual, 0.5))
-    lighter = float(np.percentile(residual, 99.5))
+    darker = -float(np.percentile(residual, POLARITY_QUANTILE))
+    lighter = float(np.percentile(residual, 100.0 - POLARITY_QUANTILE))
     if lighter > darker:
         return cv2.bitwise_not(image), True
     return image, False
@@ -151,8 +156,11 @@ def ink_strength(image: np.ndarray) -> np.ndarray:
     strength = np.clip(1.0 - ratio, 0.0, 1.0)
 
     paper = float(np.percentile(strength, 75))  # typical residual noise level
-    peak = float(np.percentile(strength, 99.9))  # robust stand-in for the darkest ink
-    if peak - paper < 0.01:  # nothing on this sheet is meaningfully darker than paper
+    # A signature may cover under 0.1 % of a high-resolution image.  The old 99.9th
+    # percentile could therefore never reach its ink and returned an empty mask.  The
+    # subsequent component filtering still rejects isolated paper grain.
+    peak = float(np.percentile(strength, INK_PEAK_QUANTILE))
+    if peak - paper < 0.004:  # nothing on this sheet is meaningfully darker than paper
         return np.zeros_like(strength)
     return np.clip((strength - paper) / (peak - paper), 0.0, 1.0)
 

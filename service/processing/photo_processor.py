@@ -81,10 +81,12 @@ EXPOSURE_MEDIAN_MIN, EXPOSURE_MEDIAN_MAX = 40.0, 225.0  # catastrophes only
 # Share of the crop that may be invented when the source is framed too tightly. Kept
 # low: replicated pixels stay visible, and an ANTS agent reads them as a background flaw.
 PADDING_LIMIT = 0.02
-# BGR. A light blue-grey, which is one of the two shades service-public.fr names outright
-# ("bleu clair ou gris clair"). Deliberately not the near-white 242 grey this used to be:
-# that reads as the white background the same page forbids.
-UNIFORM_BACKGROUND = (227, 217, 206)
+# The replacement background is a product constant, not an inferred colour.  Keep the
+# hexadecimal value here as the source of truth and derive the OpenCV BGR tuple from it.
+# This prevents different processing paths from drifting to slightly different greys.
+UNIFORM_BACKGROUND_HEX = "#d4d7d3"
+UNIFORM_BACKGROUND_RGB = (0xD4, 0xD7, 0xD3)
+UNIFORM_BACKGROUND = tuple(reversed(UNIFORM_BACKGROUND_RGB))  # OpenCV stores BGR.
 # The segmentation alpha is soft over several pixels. Steepening it and then feathering it
 # back by roughly a pixel gives a cut edge that neither haloes nor looks scissored.
 EDGE_SHARPNESS, EDGE_FEATHER = 6.0, 1.2
@@ -98,6 +100,11 @@ LEFT_EYE = (33, 160, 158, 133, 153, 144)
 RIGHT_EYE = (362, 385, 387, 263, 373, 380)
 MOUTH_INNER = (13, 14)
 MOUTH_CORNERS = (61, 291)
+# Face Mesh does not expose semantic ear landmarks.  These two outer-cheek landmarks
+# anchor a conservative, colour-relative check in the expected ear areas.
+LEFT_FACE_SIDE, RIGHT_FACE_SIDE = 234, 454
+EAR_SKIN_DISTANCE_MAX = 42.0
+EAR_SKIN_COVERAGE_MIN = 0.10
 
 _mesh_lock = threading.Lock()
 _mesh = None
@@ -121,6 +128,7 @@ class FaceGeometry:
     face_count: int = 1
     eyes_open: str = UNKNOWN
     mouth_closed: str = UNKNOWN
+    ears_visible: str = UNKNOWN
     measures: dict = field(default_factory=dict)
 
     @property
@@ -193,6 +201,60 @@ def _eye_aspect_ratio(points: np.ndarray) -> float:
     return float(vertical / (2.0 * horizontal)) if horizontal > 0 else 0.0
 
 
+def _ear_visibility(
+    image: np.ndarray, points: np.ndarray, eye_left: tuple[float, float],
+    eye_right: tuple[float, float], chin_y: float,
+) -> tuple[str, dict]:
+    """Conservatively detect exposed ear-coloured areas on both sides of a frontal face.
+
+    Face Mesh models the face only, not ears.  Rather than pretending that a cheek
+    landmark proves an ear is visible, compare two small expected ear areas with the
+    sitter's own cheek colour in Lab space.  This stays relative to the person (rather
+    than using a skin-colour threshold) and fails closed when either side is obscured.
+    The result remains a review aid, not a biometric or regulatory certification.
+    """
+    height, width = image.shape[:2]
+    left_side = points[LEFT_FACE_SIDE]
+    right_side = points[RIGHT_FACE_SIDE]
+    face_width = float(abs(right_side[0] - left_side[0]))
+    eye_y = (eye_left[1] + eye_right[1]) / 2.0
+    face_height = max(chin_y - eye_y, 1.0)
+    if face_width < 20 or face_height < 20:
+        return UNKNOWN, {}
+
+    # Sample two central cheek patches for a per-photo colour reference.  Eyes, lips and
+    # the nose are deliberately outside this band, which makes makeup and shadows less
+    # likely to dominate the comparison.
+    centre_x = int((eye_left[0] + eye_right[0]) / 2.0)
+    ref_x0, ref_x1 = int(centre_x - 0.20 * face_width), int(centre_x + 0.20 * face_width)
+    ref_y0, ref_y1 = int(eye_y + 0.18 * face_height), int(chin_y - 0.24 * face_height)
+    if ref_x0 < 0 or ref_x1 > width or ref_y0 < 0 or ref_y1 > height or ref_x1 - ref_x0 < 8 or ref_y1 - ref_y0 < 8:
+        return UNKNOWN, {}
+
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    reference = np.median(lab[ref_y0:ref_y1, ref_x0:ref_x1].reshape(-1, 3), axis=0)
+    y0, y1 = int(eye_y + 0.05 * face_height), int(chin_y - 0.12 * face_height)
+    left_bounds = (int(left_side[0] - 0.10 * face_width), int(left_side[0] + 0.06 * face_width))
+    right_bounds = (int(right_side[0] - 0.06 * face_width), int(right_side[0] + 0.10 * face_width))
+    if y0 < 0 or y1 > height or y1 - y0 < 8 or left_bounds[0] < 0 or right_bounds[1] > width:
+        return UNKNOWN, {}
+
+    def coverage(bounds: tuple[int, int]) -> float:
+        region = lab[y0:y1, bounds[0]:bounds[1]]
+        if region.size == 0:
+            return 0.0
+        distance = np.linalg.norm(region - reference, axis=2)
+        return float((distance <= EAR_SKIN_DISTANCE_MAX).mean())
+
+    left_coverage, right_coverage = coverage(left_bounds), coverage(right_bounds)
+    status = PASS if min(left_coverage, right_coverage) >= EAR_SKIN_COVERAGE_MIN else FAIL
+    return status, {
+        "ear_skin_coverage_left": round(left_coverage, 3),
+        "ear_skin_coverage_right": round(right_coverage, 3),
+        "ear_regions": [left_bounds[0], y0, left_bounds[1], y1, right_bounds[0], y0, right_bounds[1], y1],
+    }
+
+
 def _mediapipe_geometry(image: np.ndarray) -> FaceGeometry | None:
     mesh = _face_mesh()
     if mesh is None:
@@ -225,6 +287,7 @@ def _mediapipe_geometry(image: np.ndarray) -> FaceGeometry | None:
     gap = float(np.linalg.norm(points[MOUTH_INNER[0]] - points[MOUTH_INNER[1]]))
     mouth_width = float(np.linalg.norm(points[MOUTH_CORNERS[0]] - points[MOUTH_CORNERS[1]]))
     mouth_ratio = gap / mouth_width if mouth_width > 0 else 0.0
+    ears_visible, ear_measures = _ear_visibility(image, points, eye_left, eye_right, chin_y)
 
     xs, ys = points[:, 0], points[:, 1]
     box = (int(xs.min()), int(ys.min()), int(np.ptp(xs)), int(np.ptp(ys)))
@@ -233,10 +296,12 @@ def _mediapipe_geometry(image: np.ndarray) -> FaceGeometry | None:
         detector="mediapipe", face_count=len(faces),
         eyes_open=PASS if min(left_ear, right_ear) >= EYE_ASPECT_OPEN else FAIL,
         mouth_closed=PASS if mouth_ratio <= MOUTH_GAP_MAX else FAIL,
+        ears_visible=ears_visible,
         measures={
             "eye_aspect_left": round(left_ear, 3),
             "eye_aspect_right": round(right_ear, 3),
             "mouth_gap_ratio": round(mouth_ratio, 3),
+            **ear_measures,
         },
     )
 
@@ -446,6 +511,23 @@ def visible_head_ratio(geometry: FaceGeometry, box: tuple[float, float, float, f
     return max(0.0, visible_bottom - visible_top) / crop_h
 
 
+def ears_in_crop(geometry: FaceGeometry | None, box: tuple[float, float, float, float]) -> str:
+    """Return the ear check after confirming the computed crop did not remove an ear."""
+    if geometry is None or geometry.ears_visible != PASS:
+        return geometry.ears_visible if geometry is not None else UNKNOWN
+    regions = geometry.measures.get("ear_regions")
+    if not isinstance(regions, list) or len(regions) != 8:
+        return UNKNOWN
+    left, top, crop_w, crop_h = box
+    right, bottom = left + crop_w, top + crop_h
+    # Both full expected ear regions must remain within the exportable source area.  A
+    # green result for an ear that the automatic crop later cut off would be misleading.
+    for x0, y0, x1, y1 in (regions[:4], regions[4:]):
+        if x0 < left or x1 > right or y0 < top or y1 > bottom:
+            return FAIL
+    return PASS
+
+
 def _border_colour(image: np.ndarray) -> np.ndarray:
     """Median colour of the outer frame, i.e. the studio background of the shot."""
     height, width = image.shape[:2]
@@ -458,16 +540,24 @@ def _border_colour(image: np.ndarray) -> np.ndarray:
 
 
 # ── Image quality ───────────────────────────────────────────────────────────────────
-def normalise_exposure(image: np.ndarray) -> np.ndarray:
-    """Even out lighting: local contrast first, then a global pull to a neutral level."""
+def normalise_exposure(image: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Correct only clearly unusable exposure while preserving the original rendering.
+
+    The old unconditional CLAHE pass changed local contrast on every complexion.  A
+    normal ID photo already has its intended lighting, so it now passes through byte for
+    pixel; only a very dark or nearly blown image receives one global Lab-lightness
+    adjustment.  The a/b colour channels are never altered.
+    """
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     lightness, a, b = cv2.split(lab)
-    lightness = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(lightness)
     median = float(np.median(lightness))
-    if median and not 110 <= median <= 200:
-        # Multiplicative, so it corrects the exposure without crushing the highlights.
-        lightness = np.clip(lightness.astype(np.float32) * (160.0 / median), 0, 255).astype(np.uint8)
-    return cv2.cvtColor(cv2.merge((lightness, a, b)), cv2.COLOR_LAB2BGR)
+    if not median or 55.0 <= median <= 225.0:
+        return image.copy(), False
+    target = 115.0 if median < 55.0 else 205.0
+    # Multiplicative lightness is deliberately global: it corrects a catastrophe without
+    # changing facial micro-contrast or smoothing skin texture.
+    adjusted = np.clip(lightness.astype(np.float32) * (target / median), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(cv2.merge((adjusted, a, b)), cv2.COLOR_LAB2BGR), True
 
 
 def background_stats(image: np.ndarray, alpha: np.ndarray | None = None) -> tuple[float, float]:
@@ -677,7 +767,7 @@ def _band(value: float, low: float, high: float) -> str:
 def build_checks(
     geometry: FaceGeometry | None, export: np.ndarray, data: bytes,
     padding: float, background: tuple[float, float], sharpness: float,
-    head_ratio: float, eye_level: float, exposure: ExposureStats,
+    head_ratio: float, eye_level: float, exposure: ExposureStats, ears_visible: str,
 ) -> list[Check]:
     height, width = export.shape[:2]
     ratio_ok = (
@@ -695,6 +785,8 @@ def build_checks(
               _measure_detail(geometry, ("eye_aspect_left", "eye_aspect_right"))),
         Check("mouth_closed", "Bouche fermée", geometry.mouth_closed if geometry else UNKNOWN,
               _measure_detail(geometry, ("mouth_gap_ratio",))),
+        Check("ears_visible", "Oreilles visibles", ears_visible,
+              _measure_detail(geometry, ("ear_skin_coverage_left", "ear_skin_coverage_right"))),
         Check("head_tilt_ok", f"Tête droite (≤ {TILT_MAX_DEG:.0f}°)",
               UNKNOWN if not geometry or geometry.eyes_open == UNKNOWN
               else PASS if geometry.roll_degrees <= TILT_MAX_DEG else FAIL,
@@ -733,7 +825,7 @@ def _measure_detail(geometry: FaceGeometry | None, keys: tuple[str, ...]) -> str
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────────
-def process(data: bytes, override: CropOverride | None = None, flatten: str = "always") -> ProcessedImage:
+def process(data: bytes, override: CropOverride | None = None, flatten: str = "auto") -> ProcessedImage:
     """Crop, correct and grade one identity photograph."""
     override = override or CropOverride()
     try:
@@ -742,7 +834,7 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         return ProcessedImage(b"", "image/jpeg", ".jpg", 0, 0, error=str(error))
 
     geometry = detect_face(source)
-    corrected = normalise_exposure(source)
+    corrected, exposure_normalized = normalise_exposure(source)
     box = crop_box(corrected, geometry, override)
     crop, padding = extract(corrected, box)
 
@@ -777,6 +869,7 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
     crop_h = box[3]
     head_ratio = visible_head_ratio(geometry, box, source) if geometry else 0.0
     eye_level = ((geometry.eye_centre[1] - box[1]) / crop_h) if geometry and crop_h else 0.0
+    ears_visible = ears_in_crop(geometry, box)
     sharpness = imaging.laplacian_sharpness(export)
     # The face box travels from crop pixels to export pixels with the export resize.
     face_in_export = None
@@ -787,7 +880,7 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
     exposure = face_exposure(export, face_in_export)
     checks = build_checks(
         geometry, export, encoded, padding, background_stats(export, cut_alpha), sharpness,
-        head_ratio, eye_level, exposure,
+        head_ratio, eye_level, exposure, ears_visible,
     )
     metadata = {
         "detector": geometry.detector if geometry else "none",
@@ -797,6 +890,10 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         "tilt_degrees": round(geometry.roll_degrees, 2) if geometry else None,
         "padding_fraction": round(padding, 4),
         "background_replaced": replaced,
+        "background_target": UNIFORM_BACKGROUND_HEX,
+        "background_replacement_mode": flatten,
+        "exposure_normalized": exposure_normalized,
+        "ears_visible": ears_visible,
         "face_exposure": round(exposure.median, 1),
         "face_clipping": [round(exposure.blown, 2), round(exposure.crushed, 2)],
         "face_spread": round(exposure.spread, 1),

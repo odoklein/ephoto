@@ -164,6 +164,10 @@ def main() -> int:
               (state["photo"]["width"], state["photo"]["height"]) in ((414, 532), (828, 1064)),
               f"{state['photo']['width']}×{state['photo']['height']}")
         check("photo sous 2 Mo", state["photo"]["bytes"] <= 2_000_000, str(state["photo"]["bytes"]))
+        check("fond de remplacement verrouillé", state["photo"]["metadata"].get("background_target") == "#d4d7d3",
+              json.dumps(state["photo"]["metadata"]))
+        check("contrôle oreilles présent", any(check["key"] == "ears_visible" for check in state["photo"]["checks"]),
+              json.dumps(state["photo"]["checks"]))
         check("signature 521×134", (state["signature"]["width"], state["signature"]["height"]) == (521, 134),
               f"{state['signature']['width']}×{state['signature']['height']}")
         check("signature conforme", state["signature"]["compliant"] is True, json.dumps(state["signature"])[:300])
@@ -176,7 +180,7 @@ def main() -> int:
         check("fiche dossier rendue", detail.status_code == 200 and "Accepter et transmettre" in detail.text)
         check("aucun résidu de gabarit", "{{" not in detail.text and ">None<" not in detail.text)
         check("checklists affichées",
-              "Hauteur du visage" in detail.text and "Fidélité du tracé" in detail.text)
+              "Hauteur du visage" in detail.text and "Oreilles visibles" in detail.text and "Fidélité du tracé" in detail.text)
         for kind, expected in (("photo_original", "image/png"), ("photo_clean", "image/jpeg"),
                                ("signature_original", "image/png"), ("signature_clean", "image/png")):
             response = client.get(f"/admin/files/{first}/{kind}", auth=auth)

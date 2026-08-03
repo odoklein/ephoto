@@ -61,9 +61,9 @@ def load_settings() -> Settings:
         max_upload_bytes=_int("MAX_UPLOAD_BYTES", 15 * 1024 * 1024),
         # Identity photographs are personal data: they are not kept indefinitely.
         purge_after_days=_int("PURGE_AFTER_DAYS", 30),
-        # Systematic by default: the ANTS background is a specification, not a repair to
-        # attempt only when the original looks bad.
-        flatten_background=os.environ.get("FLATTEN_BACKGROUND", "always").strip().lower(),
+        # Preserve already-compliant studio photos.  The processor still replaces a
+        # background that is visibly non-uniform, too dark or effectively white.
+        flatten_background=os.environ.get("FLATTEN_BACKGROUND", "auto").strip().lower(),
         public_base_url=os.environ.get("PUBLIC_BASE_URL", "").rstrip("/"),
     )
 

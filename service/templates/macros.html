@@ -27,6 +27,13 @@
           {{ check.label }}
           {% if check.detail %}<span class="text-xs text-slate-500">— {{ check.detail }}</span>{% endif %}
         </span>
+        {% if check.status == 'pass' %}
+          <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">Pass</span>
+        {% elif check.status == 'fail' %}
+          <span class="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700">À vérifier</span>
+        {% else %}
+          <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">Indéterminé</span>
+        {% endif %}
       </li>
     {% else %}
       <li class="text-sm text-slate-500">Aucun contrôle disponible.</li>
