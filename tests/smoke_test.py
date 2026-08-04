@@ -180,6 +180,9 @@ def main() -> int:
         check("recherche du dashboard", searched_board.status_code == 200 and first in searched_board.text)
         detail = client.get(f"/admin/submissions/{first}", auth=auth)
         check("fiche dossier rendue", detail.status_code == 200 and "Accepter et transmettre" in detail.text)
+        check("fiche orientée décision",
+              "Synthèse de contrôle" in detail.text and "Décision finale" in detail.text
+              and "Écarts" in detail.text and "À confirmer" in detail.text)
         check("aucun résidu de gabarit", "{{" not in detail.text and ">None<" not in detail.text)
         check("checklists affichées",
               "Hauteur du visage" in detail.text and "Oreilles visibles" in detail.text and "Fidélité du tracé" in detail.text)

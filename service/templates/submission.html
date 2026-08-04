@@ -5,147 +5,316 @@
 {% block content %}
 {% set photo = record.photo_report %}
 {% set signature = record.signature_report %}
+{% set photo_checks = photo.get('checks', []) %}
+{% set signature_checks = signature.get('checks', []) %}
+{% set photo_failures = photo_checks | selectattr('status', 'equalto', 'fail') | list %}
+{% set signature_failures = signature_checks | selectattr('status', 'equalto', 'fail') | list %}
+{% set photo_unknowns = photo_checks | selectattr('status', 'equalto', 'unknown') | list %}
+{% set signature_unknowns = signature_checks | selectattr('status', 'equalto', 'unknown') | list %}
+{% set issue_count = (photo_failures | length) + (signature_failures | length) %}
+{% set unknown_count = (photo_unknowns | length) + (signature_unknowns | length) %}
+{% set pass_count = (photo_checks | selectattr('status', 'equalto', 'pass') | list | length) + (signature_checks | selectattr('status', 'equalto', 'pass') | list | length) %}
+{% set missing_output = not files['photo_clean'] or not files['signature_clean'] %}
+{% set customer_name = record.customer.get('name') or ((record.customer.get('first_name', '') ~ ' ' ~ record.customer.get('last_name', '')) | trim) or 'Client non renseigné' %}
 
-<a href="/admin/dashboard" class="text-sm text-slate-500 hover:text-slate-900">← Retour aux dossiers</a>
+<a href="/admin/dashboard" class="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-950">
+  <span aria-hidden="true">←</span> Retour à la file
+</a>
 
-<div class="mt-3 mb-6 flex flex-wrap items-start justify-between gap-4">
-  <div>
-    <h1 class="flex items-center gap-3 text-2xl font-semibold text-slate-900">
-      Dossier <span class="font-mono text-lg">{{ record.id }}</span> {{ ui.status_badge(record.status) }}
-    </h1>
-    <p class="mt-1 text-sm text-slate-500">
-      Reçu le {{ record.created_at[:16].replace('T', ' ') }}
-      {% if record.source_ref %} · commande {{ record.source_ref }}{% endif %}
-      {% if record.customer %} · {{ record.customer.get('email', '') }}{% endif %}
-    </p>
+<header class="mt-4 border-b border-slate-200 pb-6">
+  <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+    <div class="min-w-0">
+      <div class="flex flex-wrap items-center gap-3">
+        <h1 class="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">Examen du dossier</h1>
+        {{ ui.status_badge(record.status) }}
+      </div>
+      <p class="mt-2 font-mono text-sm font-medium text-slate-700">{{ record.id }}</p>
+    </div>
+    <dl class="grid gap-x-8 gap-y-3 text-sm sm:grid-cols-3 lg:text-right">
+      <div>
+        <dt class="text-xs text-slate-500">Client</dt>
+        <dd class="mt-0.5 font-medium text-slate-900">{{ customer_name }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs text-slate-500">Commande</dt>
+        <dd class="mt-0.5 font-medium text-slate-900">{{ record.source_ref or 'Non renseignée' }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs text-slate-500">Reçu le</dt>
+        <dd class="mt-0.5 font-medium text-slate-900">{{ record.created_at[:16].replace('T', ' ') }}</dd>
+      </div>
+    </dl>
   </div>
-  <div class="text-right text-sm">
-    <div>Photo <b>{{ photo.get('score', 0) }} %</b> · Signature <b>{{ signature.get('score', 0) }} %</b></div>
-    {% if record.customer %}
-      <div class="text-xs text-slate-500">{{ record.customer.get('name') or ((record.customer.get('first_name', '') ~ ' ' ~ record.customer.get('last_name', '')) | trim) }}</div>
-    {% endif %}
-  </div>
-</div>
+</header>
 
 {% if record.error %}
-  <div class="mb-6 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-200">Traitement : {{ record.error }}</div>
+  <div class="mt-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="alert">
+    <span class="font-semibold">Traitement incomplet.</span> {{ record.error }}
+  </div>
 {% endif %}
 {% if record.forward_status and record.status != 'accepted' %}
-  <div class="mb-6 rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-900 ring-1 ring-rose-200">Dernière transmission : {{ record.forward_status }}</div>
+  <div class="mt-5 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-950" role="alert">
+    <span class="font-semibold">La dernière transmission a échoué.</span> {{ record.forward_status }}
+  </div>
 {% endif %}
 
-<div class="grid gap-6 lg:grid-cols-2">
-  {# ── Photo ───────────────────────────────────────────────────────────────── #}
-  <section class="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
-    <div class="mb-4 flex items-center justify-between">
-      <h2 class="font-semibold text-slate-900">Photo d'identité</h2>
-      <span class="text-sm text-slate-500">{{ photo.get('width', 0) }}×{{ photo.get('height', 0) }} px ·
-        {{ (photo.get('bytes', 0) / 1000) | round | int }} ko · {{ photo.get('media_type', '—') }}</span>
+<section aria-labelledby="review-summary-title" class="mt-6 overflow-hidden rounded-xl border {{ 'border-rose-200 bg-rose-50/60' if record.error or missing_output else 'border-amber-200 bg-amber-50/60' if issue_count or unknown_count else 'border-emerald-200 bg-emerald-50/60' }}">
+  <div class="grid lg:grid-cols-[minmax(0,1fr)_auto]">
+    <div class="p-5 sm:p-6">
+      <p class="text-xs font-semibold text-slate-600">Synthèse de contrôle</p>
+      {% if record.status == 'processing' %}
+        <h2 id="review-summary-title" class="mt-1 text-xl font-semibold text-slate-950">Traitement en cours</h2>
+        <p class="mt-2 max-w-3xl text-sm leading-6 text-slate-700">Les contrôles ne sont pas encore complets. Actualisez la page avant de prendre une décision.</p>
+      {% elif record.error or missing_output %}
+        <h2 id="review-summary-title" class="mt-1 text-xl font-semibold text-rose-950">Décision bloquée par un problème technique</h2>
+        <p class="mt-2 max-w-3xl text-sm leading-6 text-rose-900">Une sortie est absente ou le traitement a échoué. Résolvez ce problème avant de transmettre le dossier.</p>
+      {% elif issue_count %}
+        <h2 id="review-summary-title" class="mt-1 text-xl font-semibold text-amber-950">{{ issue_count }} écart{{ 's' if issue_count != 1 else '' }} à examiner</h2>
+        <p class="mt-2 max-w-3xl text-sm leading-6 text-amber-900">Commencez par les critères signalés ci-dessous. Un écart automatique attire votre attention, mais ne remplace pas votre jugement.</p>
+      {% elif unknown_count %}
+        <h2 id="review-summary-title" class="mt-1 text-xl font-semibold text-amber-950">{{ unknown_count }} critère{{ 's' if unknown_count != 1 else '' }} à confirmer</h2>
+        <p class="mt-2 max-w-3xl text-sm leading-6 text-amber-900">Aucun écart mesuré, mais certains critères n'ont pas pu être évalués automatiquement. Vérifiez-les sur les images.</p>
+      {% else %}
+        <h2 id="review-summary-title" class="mt-1 text-xl font-semibold text-emerald-950">Aucun écart automatique détecté</h2>
+        <p class="mt-2 max-w-3xl text-sm leading-6 text-emerald-900">Comparez encore les originaux et les sorties. La conformité finale reste une décision humaine.</p>
+      {% endif %}
+
+      {% if issue_count %}
+        <div class="mt-4 flex flex-wrap gap-2" aria-label="Écarts détectés">
+          {% for check in photo_failures %}
+            <a href="#photo-review" class="rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-medium text-amber-950 hover:border-amber-500">Photo: {{ check.label }}</a>
+          {% endfor %}
+          {% for check in signature_failures %}
+            <a href="#signature-review" class="rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-medium text-amber-950 hover:border-amber-500">Signature: {{ check.label }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
     </div>
-    <div class="mb-4 grid grid-cols-2 gap-3">
-      {% for kind, label in [('photo_original', 'Original'), ('photo_clean', 'Traitée (35:45)')] %}
-        <figure>
-          <div class="flex h-56 items-center justify-center rounded border border-slate-200 bg-[repeating-conic-gradient(#f8fafc_0_25%,#eef2f7_0_50%)] bg-[length:16px_16px]">
-            {% if files[kind] %}<img src="/admin/files/{{ record.id }}/{{ kind }}" alt="{{ label }}" class="max-h-full max-w-full object-contain">
-            {% else %}<span class="text-xs text-slate-400">absent</span>{% endif %}
+    <dl class="grid grid-cols-3 border-t border-slate-900/10 bg-white/60 lg:min-w-[340px] lg:border-l lg:border-t-0">
+      <div class="p-4 text-center sm:p-5">
+        <dt class="text-xs text-slate-500">Écarts</dt>
+        <dd class="mt-1 text-2xl font-semibold {{ 'text-rose-700' if issue_count else 'text-slate-900' }}">{{ issue_count }}</dd>
+      </div>
+      <div class="border-l border-slate-900/10 p-4 text-center sm:p-5">
+        <dt class="text-xs text-slate-500">À confirmer</dt>
+        <dd class="mt-1 text-2xl font-semibold {{ 'text-amber-700' if unknown_count else 'text-slate-900' }}">{{ unknown_count }}</dd>
+      </div>
+      <div class="border-l border-slate-900/10 p-4 text-center sm:p-5">
+        <dt class="text-xs text-slate-500">Conformes</dt>
+        <dd class="mt-1 text-2xl font-semibold text-slate-900">{{ pass_count }}</dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<div class="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+  <div class="space-y-6">
+    <section id="photo-review" aria-labelledby="photo-title" class="scroll-mt-5 rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div class="flex flex-wrap items-center gap-2.5">
+            <h2 id="photo-title" class="text-lg font-semibold text-slate-950">Photo d'identité</h2>
+            {{ ui.review_result(photo) }}
           </div>
-          <figcaption class="mt-1 text-center text-xs text-slate-500">{{ label }}</figcaption>
-        </figure>
-      {% endfor %}
-    </div>
-    {{ ui.score_bar(photo.get('score', 0)) }}
-    <div class="mt-4">{{ ui.checklist(photo) }}</div>
+          <p class="mt-1 text-xs text-slate-500">Score indicatif {{ photo.get('score', 0) }} %. Vérifiez le visage, le cadrage et le fond.</p>
+        </div>
+        <p class="text-xs text-slate-500 sm:text-right">Sortie {{ photo.get('width', 0) }} × {{ photo.get('height', 0) }} px<br>{{ (photo.get('bytes', 0) / 1000) | round | int }} ko, {{ photo.get('media_type', 'format inconnu') }}</p>
+      </div>
 
-    <details class="mt-4 text-xs text-slate-500">
-      <summary class="cursor-pointer select-none">Mesures techniques</summary>
-      <dl class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-        {% for key, value in (photo.get('metadata') or {}).items() %}
-          <dt class="text-slate-400">{{ key }}</dt><dd class="text-slate-700">{{ '—' if value is none else value }}</dd>
-        {% endfor %}
-      </dl>
-    </details>
+      <div class="p-5">
+        <div class="grid gap-4 md:grid-cols-2">
+          {% for kind, label, description in [('photo_original', 'Photo reçue', 'Référence fournie par le client'), ('photo_clean', 'Photo préparée', 'Sortie au ratio 35:45 à transmettre')] %}
+            <figure class="min-w-0">
+              <div class="mb-2 flex items-end justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-slate-900">{{ label }}</h3>
+                  <p class="text-xs text-slate-500">{{ description }}</p>
+                </div>
+                {% if files[kind] %}<a href="/admin/files/{{ record.id }}/{{ kind }}" target="_blank" rel="noopener" class="shrink-0 text-xs font-medium text-teal-700 hover:text-teal-900">Ouvrir en grand</a>{% endif %}
+              </div>
+              <div class="flex h-80 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-[repeating-conic-gradient(#f8fafc_0_25%,#eef2f7_0_50%)] bg-[length:16px_16px]">
+                {% if files[kind] %}<img src="/admin/files/{{ record.id }}/{{ kind }}" alt="{{ label }}" class="max-h-full max-w-full object-contain">
+                {% else %}<span class="text-sm font-medium text-rose-700">Fichier absent</span>{% endif %}
+              </div>
+            </figure>
+          {% endfor %}
+        </div>
 
-    {% if record.status in ('pending', 'processing') and files['photo_original'] %}
-      <form method="post" action="/admin/submissions/{{ record.id }}/recrop" class="mt-4 flex flex-wrap items-end gap-3 rounded-md bg-slate-50 p-3">
+        <div class="mt-6">{{ ui.checklist(photo) }}</div>
+
+        {% if record.status in ('pending', 'processing') and files['photo_original'] %}
+          <details class="mt-5 rounded-lg border border-slate-200 bg-slate-50">
+            <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-slate-800">Ajuster le recadrage</summary>
+            <form method="post" action="/admin/submissions/{{ record.id }}/recrop" class="border-t border-slate-200 p-4">
+              <p class="max-w-2xl text-xs leading-5 text-slate-600">Utilisez cet outil si la tête est mal dimensionnée ou décentrée. Les valeurs s'appliquent à la photo reçue.</p>
+              <div class="mt-4 grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label class="block text-xs font-medium text-slate-700" for="zoom">Taille du cadre</label>
+                  <input id="zoom" name="zoom" type="number" step="0.05" min="0.5" max="2" value="1" class="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
+                  <p class="mt-1 text-xs text-slate-500">Plus de 1 rend le visage plus petit.</p>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-700" for="dx">Position horizontale</label>
+                  <input id="dx" name="dx" type="number" step="0.02" min="-0.5" max="0.5" value="0" class="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
+                  <p class="mt-1 text-xs text-slate-500">Négatif à gauche, positif à droite.</p>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-700" for="dy">Position verticale</label>
+                  <input id="dy" name="dy" type="number" step="0.02" min="-0.5" max="0.5" value="0" class="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
+                  <p class="mt-1 text-xs text-slate-500">Négatif en haut, positif en bas.</p>
+                </div>
+              </div>
+              <div class="mt-4 flex flex-wrap gap-3">
+                <button class="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 active:translate-y-px">Recalculer la photo</button>
+                <button type="reset" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Réinitialiser</button>
+              </div>
+            </form>
+          </details>
+        {% endif %}
+
+        {{ ui.technical_details(photo) }}
+      </div>
+    </section>
+
+    <section id="signature-review" aria-labelledby="signature-title" class="scroll-mt-5 rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <label class="block text-xs text-slate-500" for="zoom">Zoom</label>
-          <input id="zoom" name="zoom" type="number" step="0.05" min="0.5" max="2" value="1"
-                 class="w-24 rounded border-slate-300 px-2 py-1 text-sm ring-1 ring-slate-200">
+          <div class="flex flex-wrap items-center gap-2.5">
+            <h2 id="signature-title" class="text-lg font-semibold text-slate-950">Signature</h2>
+            {{ ui.review_result(signature) }}
+          </div>
+          <p class="mt-1 text-xs text-slate-500">Score indicatif {{ signature.get('score', 0) }} %. Vérifiez la fidélité du tracé et la lisibilité.</p>
         </div>
-        <div>
-          <label class="block text-xs text-slate-500" for="dx">Décalage ↔</label>
-          <input id="dx" name="dx" type="number" step="0.02" min="-0.5" max="0.5" value="0"
-                 class="w-24 rounded border-slate-300 px-2 py-1 text-sm ring-1 ring-slate-200">
+        <p class="text-xs text-slate-500 sm:text-right">Sortie {{ signature.get('width', 0) }} × {{ signature.get('height', 0) }} px<br>{{ (signature.get('bytes', 0) / 1000) | round | int }} ko, {{ signature.get('media_type', 'format inconnu') }}</p>
+      </div>
+
+      <div class="p-5">
+        <div class="grid gap-4 md:grid-cols-2">
+          {% for kind, label, description in [('signature_original', 'Signature reçue', 'Référence fournie par le client'), ('signature_clean', 'Signature préparée', 'Sortie PNG au ratio 4:1')] %}
+            <figure class="min-w-0">
+              <div class="mb-2 flex items-end justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-slate-900">{{ label }}</h3>
+                  <p class="text-xs text-slate-500">{{ description }}</p>
+                </div>
+                {% if files[kind] %}<a href="/admin/files/{{ record.id }}/{{ kind }}" target="_blank" rel="noopener" class="shrink-0 text-xs font-medium text-teal-700 hover:text-teal-900">Ouvrir en grand</a>{% endif %}
+              </div>
+              <div class="flex h-40 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white">
+                {% if files[kind] %}<img src="/admin/files/{{ record.id }}/{{ kind }}" alt="{{ label }}" class="max-h-full max-w-full object-contain">
+                {% else %}<span class="text-sm font-medium text-rose-700">Fichier absent</span>{% endif %}
+              </div>
+            </figure>
+          {% endfor %}
         </div>
-        <div>
-          <label class="block text-xs text-slate-500" for="dy">Décalage ↕</label>
-          <input id="dy" name="dy" type="number" step="0.02" min="-0.5" max="0.5" value="0"
-                 class="w-24 rounded border-slate-300 px-2 py-1 text-sm ring-1 ring-slate-200">
+
+        <div class="mt-6">{{ ui.checklist(signature) }}</div>
+        {{ ui.technical_details(signature) }}
+      </div>
+    </section>
+  </div>
+
+  <aside class="space-y-4 xl:sticky xl:top-5">
+    {% if record.status in ('pending', 'processing') %}
+      <form id="decision-form" method="post" action="/admin/submissions/{{ record.id }}/decision" class="rounded-xl border border-slate-300 bg-white p-5 shadow-sm">
+        <h2 class="text-lg font-semibold text-slate-950">Décision finale</h2>
+        {% if issue_count %}
+          <p class="mt-2 text-sm leading-5 text-amber-800">{{ issue_count }} écart{{ 's' if issue_count != 1 else '' }} reste{{ 'nt' if issue_count != 1 else '' }} signalé{{ 's' if issue_count != 1 else '' }}.</p>
+        {% elif unknown_count %}
+          <p class="mt-2 text-sm leading-5 text-amber-800">{{ unknown_count }} critère{{ 's' if unknown_count != 1 else '' }} nécessite{{ 'nt' if unknown_count != 1 else '' }} votre confirmation.</p>
+        {% else %}
+          <p class="mt-2 text-sm leading-5 text-slate-600">Aucun écart automatique. Confirmez après comparaison visuelle.</p>
+        {% endif %}
+
+        <label class="mt-5 block text-sm font-medium text-slate-800" for="note">Commentaire de contrôle</label>
+        <textarea id="note" name="note" rows="4" class="mt-2 w-full rounded-lg border border-slate-300 p-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100" placeholder="Expliquez les vérifications faites ou le motif du refus."></textarea>
+        <p id="note-help" class="mt-1.5 text-xs leading-5 text-slate-500">Le motif est obligatoire pour un refus et conservé dans l'historique du dossier.</p>
+
+        <div class="mt-5 space-y-2.5">
+          <button name="action" value="accept" {% if record.status == 'processing' or record.error or missing_output or not settings.outbound_enabled %}disabled{% endif %} class="w-full rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 active:translate-y-px disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
+            Accepter et transmettre
+          </button>
+          <button name="action" value="reject" formnovalidate {% if record.status == 'processing' %}disabled{% endif %} class="w-full rounded-lg border border-rose-300 bg-white px-4 py-2.5 text-sm font-semibold text-rose-800 hover:bg-rose-50 active:translate-y-px disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400">
+            Refuser le dossier
+          </button>
         </div>
-        <button class="rounded-md bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-300">Recadrer</button>
-        <p class="w-full text-xs text-slate-500">Zoom &gt; 1 élargit le cadre (visage plus petit). Décalages en fraction du cadre.</p>
+
+        {% if not settings.outbound_enabled %}
+          <p class="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">Transmission non configurée. L'acceptation est désactivée.</p>
+        {% elif record.status == 'processing' %}
+          <p class="mt-3 rounded-md bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900">Attendez la fin du traitement avant de décider.</p>
+        {% elif record.error or missing_output %}
+          <p class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-900">L'acceptation est désactivée tant que les deux sorties ne sont pas disponibles.</p>
+        {% else %}
+          <p class="mt-3 text-xs leading-5 text-slate-500">Accepter transmet immédiatement la photo et la signature à Ephoto. Le dossier ne pourra plus être modifié.</p>
+        {% endif %}
       </form>
-    {% endif %}
-  </section>
-
-  {# ── Signature ───────────────────────────────────────────────────────────── #}
-  <section class="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
-    <div class="mb-4 flex items-center justify-between">
-      <h2 class="font-semibold text-slate-900">Signature</h2>
-      <span class="text-sm text-slate-500">{{ signature.get('width', 0) }}×{{ signature.get('height', 0) }} px ·
-        {{ (signature.get('bytes', 0) / 1000) | round | int }} ko · {{ signature.get('media_type', '—') }}</span>
-    </div>
-    <div class="mb-4 space-y-3">
-      {% for kind, label in [('signature_original', 'Original'), ('signature_clean', 'Nettoyée (4:1)')] %}
-        <figure>
-          <div class="flex h-28 items-center justify-center rounded border border-slate-200 bg-white">
-            {% if files[kind] %}<img src="/admin/files/{{ record.id }}/{{ kind }}" alt="{{ label }}" class="max-h-full max-w-full object-contain">
-            {% else %}<span class="text-xs text-slate-400">absent</span>{% endif %}
+    {% else %}
+      <section aria-labelledby="decision-record-title" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 id="decision-record-title" class="text-lg font-semibold text-slate-950">Décision enregistrée</h2>
+        <div class="mt-3">{{ ui.status_badge(record.status) }}</div>
+        <dl class="mt-5 space-y-4 text-sm">
+          <div>
+            <dt class="text-xs text-slate-500">Contrôleur</dt>
+            <dd class="mt-0.5 font-medium text-slate-900">{{ record.reviewer or 'Non renseigné' }}</dd>
           </div>
-          <figcaption class="mt-1 text-center text-xs text-slate-500">{{ label }}</figcaption>
-        </figure>
-      {% endfor %}
-    </div>
-    {{ ui.score_bar(signature.get('score', 0)) }}
-    <div class="mt-4">{{ ui.checklist(signature) }}</div>
+          <div>
+            <dt class="text-xs text-slate-500">Date</dt>
+            <dd class="mt-0.5 text-slate-900">{{ record.decided_at[:16].replace('T', ' ') if record.decided_at else 'Non renseignée' }}</dd>
+          </div>
+          {% if record.forward_status %}
+            <div>
+              <dt class="text-xs text-slate-500">Transmission</dt>
+              <dd class="mt-0.5 text-slate-900">{{ record.forward_status }}</dd>
+            </div>
+          {% endif %}
+          {% if record.reviewer_note %}
+            <div>
+              <dt class="text-xs text-slate-500">Commentaire</dt>
+              <dd class="mt-1 rounded-lg bg-slate-50 p-3 leading-5 text-slate-700">{{ record.reviewer_note }}</dd>
+            </div>
+          {% endif %}
+        </dl>
+      </section>
+    {% endif %}
 
-    <details class="mt-4 text-xs text-slate-500">
-      <summary class="cursor-pointer select-none">Mesures techniques</summary>
-      <dl class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-        {% for key, value in (signature.get('metadata') or {}).items() %}
-          <dt class="text-slate-400">{{ key }}</dt><dd class="text-slate-700">{{ '—' if value is none else value }}</dd>
-        {% endfor %}
+    <section aria-labelledby="customer-title" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 id="customer-title" class="text-sm font-semibold text-slate-950">Client et origine</h2>
+      <dl class="mt-4 space-y-3 text-sm">
+        <div>
+          <dt class="text-xs text-slate-500">Nom</dt>
+          <dd class="mt-0.5 text-slate-900">{{ customer_name }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs text-slate-500">E-mail</dt>
+          <dd class="mt-0.5 break-all text-slate-900">{{ record.customer.get('email', '') or 'Non renseigné' }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs text-slate-500">Référence source</dt>
+          <dd class="mt-0.5 text-slate-900">{{ record.source_ref or 'Non renseignée' }}</dd>
+        </div>
       </dl>
-    </details>
-  </section>
+    </section>
+  </aside>
 </div>
 
-{# ── Décision ─────────────────────────────────────────────────────────────── #}
 {% if record.status in ('pending', 'processing') %}
-  <form method="post" action="/admin/submissions/{{ record.id }}/decision"
-        class="mt-6 rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
-    <label class="block text-sm font-medium text-slate-800" for="note">Commentaire (motif en cas de refus)</label>
-    <textarea id="note" name="note" rows="2" class="mt-2 w-full rounded-md border-0 p-2 text-sm ring-1 ring-slate-300 focus:ring-slate-900"
-              placeholder="Ex. : photo floue, sourire marqué, fond non uniforme…"></textarea>
-    <div class="mt-4 flex flex-wrap gap-3">
-      <button name="action" value="accept"
-              class="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">
-        Accepter et transmettre
-      </button>
-      <button name="action" value="reject" formnovalidate
-              class="rounded-md bg-white px-4 py-2 text-sm font-semibold text-rose-700 ring-1 ring-rose-300 hover:bg-rose-50">
-        Refuser
-      </button>
-      <p class="self-center text-xs text-slate-500">
-        « Accepter » envoie photo + signature au webhook Make/Ephoto.io puis archive le dossier.
-      </p>
-    </div>
-  </form>
-{% else %}
-  <div class="mt-6 rounded-lg bg-white p-5 text-sm shadow-sm ring-1 ring-slate-200">
-    Décidé par <b>{{ record.reviewer or '—' }}</b> le {{ record.decided_at[:16].replace('T', ' ') }}.
-    {% if record.forward_status %} Transmission : {{ record.forward_status }}.{% endif %}
-    {% if record.reviewer_note %}<div class="mt-1 text-slate-600">Motif : {{ record.reviewer_note }}</div>{% endif %}
-  </div>
+<script>
+  (() => {
+    const form = document.querySelector('#decision-form');
+    const note = document.querySelector('#note');
+    if (!form || !note) return;
+
+    note.addEventListener('input', () => note.setCustomValidity(''));
+    form.addEventListener('submit', (event) => {
+      const action = event.submitter && event.submitter.value;
+      if (action === 'reject' && !note.value.trim()) {
+        event.preventDefault();
+        note.setCustomValidity('Indiquez le motif du refus.');
+        note.reportValidity();
+        note.focus();
+      }
+    });
+  })();
+</script>
 {% endif %}
 {% endblock %}

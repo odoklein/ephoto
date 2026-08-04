@@ -1,42 +1,95 @@
 {# Shared UI fragments: kept out of base.html so children can import without rendering it. #}
 
-{% macro dot(status) -%}
-  {%- if status == 'pass' -%}<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" title="conforme"></span>
-  {%- elif status == 'fail' -%}<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500" title="non conforme"></span>
-  {%- else -%}<span class="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-slate-300" title="indéterminé"></span>{%- endif -%}
-{%- endmacro %}
-
-{% macro score_bar(value) -%}
-  <div class="h-1.5 w-full overflow-hidden rounded bg-slate-200">
-    <div class="h-full {{ 'bg-emerald-500' if value >= 90 else 'bg-amber-500' if value >= 70 else 'bg-rose-500' }}" style="width: {{ value }}%"></div>
-  </div>
-{%- endmacro %}
-
 {% macro status_badge(status) -%}
   {%- set styles = {'pending': 'bg-sky-100 text-sky-800', 'processing': 'bg-slate-200 text-slate-700', 'accepted': 'bg-emerald-100 text-emerald-800', 'rejected': 'bg-rose-100 text-rose-800', 'error': 'bg-amber-100 text-amber-900'} -%}
-  {%- set labels = {'pending': 'À contrôler', 'processing': 'Traitement…', 'accepted': 'Transmis', 'rejected': 'Refusé', 'error': 'Erreur'} -%}
-  <span class="rounded-full px-2.5 py-1 text-xs font-medium {{ styles.get(status, 'bg-slate-200 text-slate-700') }}">{{ labels.get(status, status) }}</span>
+  {%- set labels = {'pending': 'À contrôler', 'processing': 'Traitement en cours', 'accepted': 'Transmis', 'rejected': 'Refusé', 'error': 'Erreur'} -%}
+  <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {{ styles.get(status, 'bg-slate-200 text-slate-700') }}">{{ labels.get(status, status) }}</span>
+{%- endmacro %}
+
+{% macro review_result(report) -%}
+  {% set failures = report.get('checks', []) | selectattr('status', 'equalto', 'fail') | list %}
+  {% set unknowns = report.get('checks', []) | selectattr('status', 'equalto', 'unknown') | list %}
+  {% if failures %}
+    <span class="rounded-md bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">{{ failures | length }} écart{{ 's' if failures | length != 1 else '' }}</span>
+  {% elif unknowns %}
+    <span class="rounded-md bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">{{ unknowns | length }} à confirmer</span>
+  {% else %}
+    <span class="rounded-md bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Contrôles réussis</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro check_row(check) -%}
+  <li class="flex gap-3 rounded-lg border px-3 py-3 {{ 'border-rose-200 bg-rose-50' if check.status == 'fail' else 'border-amber-200 bg-amber-50' if check.status == 'unknown' else 'border-slate-200 bg-white' }}">
+    <span aria-hidden="true" class="grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs font-bold {{ 'bg-rose-700 text-white' if check.status == 'fail' else 'bg-amber-500 text-amber-950' if check.status == 'unknown' else 'bg-emerald-100 text-emerald-800' }}">
+      {{ '!' if check.status == 'fail' else '?' if check.status == 'unknown' else '✓' }}
+    </span>
+    <span class="min-w-0 flex-1">
+      <span class="flex flex-wrap items-start justify-between gap-2">
+        <span class="text-sm font-medium text-slate-900">{{ check.label }}</span>
+        <span class="shrink-0 text-xs font-semibold {{ 'text-rose-800' if check.status == 'fail' else 'text-amber-900' if check.status == 'unknown' else 'text-emerald-800' }}">
+          {{ 'Écart détecté' if check.status == 'fail' else 'À confirmer' if check.status == 'unknown' else 'Conforme' }}
+        </span>
+      </span>
+      {% if check.detail %}<span class="mt-1 block text-xs leading-5 text-slate-600">{{ check.detail }}</span>{% endif %}
+    </span>
+  </li>
 {%- endmacro %}
 
 {% macro checklist(report) -%}
-  <ul class="space-y-1.5 text-sm">
-    {% for check in report.get('checks', []) %}
-      <li class="flex items-start gap-2.5">
-        {{ dot(check.status) }}
-        <span class="flex-1 leading-tight {{ 'text-slate-400' if check.status == 'unknown' else '' }}">
-          {{ check.label }}
-          {% if check.detail %}<span class="text-xs text-slate-500">— {{ check.detail }}</span>{% endif %}
-        </span>
-        {% if check.status == 'pass' %}
-          <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">Pass</span>
-        {% elif check.status == 'fail' %}
-          <span class="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700">À vérifier</span>
-        {% else %}
-          <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">Indéterminé</span>
-        {% endif %}
-      </li>
-    {% else %}
-      <li class="text-sm text-slate-500">Aucun contrôle disponible.</li>
-    {% endfor %}
-  </ul>
+  {% set checks = report.get('checks', []) %}
+  {% set failures = checks | selectattr('status', 'equalto', 'fail') | list %}
+  {% set unknowns = checks | selectattr('status', 'equalto', 'unknown') | list %}
+  {% set passes = checks | selectattr('status', 'equalto', 'pass') | list %}
+
+  <div>
+    <h3 class="text-sm font-semibold text-slate-950">Critères de contrôle</h3>
+    <p class="mt-1 text-xs text-slate-500">Les écarts et les mesures indéterminées sont affichés en premier.</p>
+
+    {% if failures %}
+      <section aria-label="Écarts détectés" class="mt-4">
+        <h4 class="mb-2 text-xs font-semibold text-rose-800">À examiner en priorité</h4>
+        <ul class="space-y-2">
+          {% for check in failures %}{{ check_row(check) }}{% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if unknowns %}
+      <section aria-label="Critères à confirmer" class="mt-4">
+        <h4 class="mb-2 text-xs font-semibold text-amber-900">À confirmer visuellement</h4>
+        <ul class="space-y-2">
+          {% for check in unknowns %}{{ check_row(check) }}{% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if passes %}
+      <details class="mt-4" {% if not failures and not unknowns %}open{% endif %}>
+        <summary class="cursor-pointer select-none text-sm font-medium text-slate-700 hover:text-slate-950">{{ passes | length }} critère{{ 's' if passes | length != 1 else '' }} conforme{{ 's' if passes | length != 1 else '' }}</summary>
+        <ul class="mt-3 space-y-2">
+          {% for check in passes %}{{ check_row(check) }}{% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+
+    {% if not checks %}
+      <div class="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">Aucun contrôle automatique disponible. Effectuez une vérification visuelle complète.</div>
+    {% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro technical_details(report) -%}
+  {% if report.get('metadata') %}
+    <details class="mt-5 border-t border-slate-200 pt-4 text-xs text-slate-600">
+      <summary class="cursor-pointer select-none font-medium text-slate-700 hover:text-slate-950">Afficher les données techniques</summary>
+      <dl class="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+        {% for key, value in report.get('metadata', {}).items() %}
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-slate-100 pb-2">
+            <dt class="break-all text-slate-500">{{ key }}</dt>
+            <dd class="max-w-48 break-all text-right font-mono text-slate-800">{{ 'Non mesuré' if value is none else value }}</dd>
+          </div>
+        {% endfor %}
+      </dl>
+    </details>
+  {% endif %}
 {%- endmacro %}
