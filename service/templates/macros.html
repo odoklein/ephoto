@@ -85,11 +85,61 @@
       <dl class="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
         {% for key, value in report.get('metadata', {}).items() %}
           <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-slate-100 pb-2">
-            <dt class="break-all text-slate-500">{{ key }}</dt>
-            <dd class="max-w-48 break-all text-right font-mono text-slate-800">{{ 'Non mesuré' if value is none else value }}</dd>
+            <dt class="text-slate-500">{{ metadata_label(key) }}</dt>
+            <dd class="max-w-48 break-all text-right font-mono text-slate-800">{{ metadata_value(value) }}</dd>
           </div>
         {% endfor %}
       </dl>
     </details>
   {% endif %}
+{%- endmacro %}
+
+{% macro metadata_label(key) -%}
+  {%- set labels = {
+    'detector': 'Méthode de détection',
+    'faces_found': 'Visages détectés',
+    'head_ratio': 'Part occupée par la tête',
+    'eye_level': 'Hauteur des yeux',
+    'tilt_degrees': 'Inclinaison du visage',
+    'padding_fraction': 'Marge autour du sujet',
+    'background_replaced': 'Fond remplacé',
+    'background_target': 'Couleur de fond cible',
+    'background_replacement_mode': 'Mode de remplacement du fond',
+    'exposure_normalized': 'Exposition corrigée',
+    'ears_visible': 'Visibilité des oreilles',
+    'face_exposure': 'Luminosité du visage',
+    'face_clipping': 'Zones trop claires ou trop sombres',
+    'face_spread': 'Étendue des tons du visage',
+    'sharpness': 'Netteté mesurée',
+    'jpeg_quality': 'Qualité JPEG',
+    'crop_box': 'Cadre de recadrage',
+    'source_size': 'Dimensions de la source',
+    'override': 'Réglage manuel appliqué',
+    'eye_aspect_left': 'Ouverture de l’œil gauche',
+    'eye_aspect_right': 'Ouverture de l’œil droit',
+    'mouth_gap_ratio': 'Ouverture de la bouche',
+    'ear_skin_coverage_left': 'Visibilité de l’oreille gauche',
+    'ear_skin_coverage_right': 'Visibilité de l’oreille droite',
+    'eyes_detected': 'Yeux détectés',
+    'processing_mode': 'Méthode de nettoyage',
+    'inverted': 'Couleurs inversées',
+    'presentation_bars_trimmed': 'Bandes de présentation retirées',
+    'raw_density': 'Densité du tracé source',
+    'output_density': 'Densité du tracé final',
+    'raw_components': 'Éléments détectés dans la source',
+    'output_components': 'Éléments conservés dans la sortie'
+  } -%}
+  {{ labels.get(key, key | replace('_', ' ') | capitalize) }}
+{%- endmacro %}
+
+{% macro metadata_value(value) -%}
+  {%- if value is none -%}Non mesuré
+  {%- elif value is sameas true -%}Oui
+  {%- elif value is sameas false -%}Non
+  {%- elif value == 'pass' -%}Conforme
+  {%- elif value == 'fail' -%}Non conforme
+  {%- elif value == 'unknown' -%}Indéterminé
+  {%- elif value == 'none' -%}Aucune
+  {%- else -%}{{ value }}
+  {%- endif -%}
 {%- endmacro %}

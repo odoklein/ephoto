@@ -236,6 +236,10 @@ def main() -> int:
         check("signature inversée détectée", state["signature"]["metadata"].get("inverted") is True,
               json.dumps(state["signature"].get("metadata"))[:200])
         check("signature inversée conforme", state["signature"]["compliant"] is True)
+        missing_reason = client.post(
+            f"/api/v1/validate/{second}", json={"action": "reject", "reason": "   "}, auth=auth
+        )
+        check("motif obligatoire pour un refus", missing_reason.status_code == 422)
 
         rejected = client.post(f"/api/v1/validate/{second}", json={"action": "reject", "reason": "photo floue"}, auth=auth)
         check("refus enregistré", rejected.status_code == 200 and rejected.json()["status"] == "rejected")

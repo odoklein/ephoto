@@ -207,6 +207,9 @@ def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
         raise HTTPException(409, f"Dossier déjà traité ({record['status']}).")
     if action not in ("accept", "reject"):
         raise HTTPException(422, "Action inconnue : accept ou reject.")
+    note = note.strip()
+    if action == "reject" and not note:
+        raise HTTPException(422, "Le motif du refus est obligatoire.")
 
     if action == "reject":
         database.update(
