@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..models import FAIL, PASS, Check, ProcessedImage
+from ..models import FAIL, PASS, UNKNOWN, Check, ProcessedImage
 
 import signature_validator as validator
 
@@ -31,7 +31,10 @@ LABELS = {
 }
 
 
-def process(data: bytes, filename: str = "signature.png", max_bytes: int = MAX_BYTES) -> ProcessedImage:
+def process(
+    data: bytes, filename: str = "signature.png", max_bytes: int = MAX_BYTES,
+    rotation_degrees: int | None = None,
+) -> ProcessedImage:
     """Clean one signature and report the five conformity criteria."""
     suffix = Path(filename).suffix.lower()
     if suffix not in validator.SUPPORTED:
@@ -42,7 +45,10 @@ def process(data: bytes, filename: str = "signature.png", max_bytes: int = MAX_B
         source_dir.mkdir()
         source = source_dir / f"signature{suffix}"
         source.write_bytes(data)
-        rows = validator.process_files([source], output_dir, margin=6, max_bytes=max_bytes)
+        rows = validator.process_files(
+            [source], output_dir, margin=6, max_bytes=max_bytes,
+            rotation_degrees=rotation_degrees,
+        )
         row = asdict(rows[0])
         exported = Path(row["output_file"]) if row["output_file"] else None
         if exported is None or not exported.exists():
@@ -54,11 +60,18 @@ def process(data: bytes, filename: str = "signature.png", max_bytes: int = MAX_B
         with Image.open(exported) as loaded:
             width, height = loaded.size
 
-    checks = [
+    orientation_status = UNKNOWN if row["orientation_review"] else PASS
+    orientation_detail = _orientation_detail(row)
+    checks = [Check("orientation_ok", "Orientation de la signature", orientation_status, orientation_detail)]
+    checks.extend(
         Check(key, LABELS[key], PASS if row[key] == "pass" else FAIL, _detail(key, row))
         for key in LABELS
-    ]
+    )
     metadata = {
+        "orientation_degrees": row["orientation_degrees"],
+        "orientation_confidence": row["orientation_confidence"],
+        "orientation_review": row["orientation_review"],
+        "orientation_source": row["orientation_source"],
         "processing_mode": row["processing_mode"],
         "inverted": "inverted" in row["processing_mode"].split("+"),
         "presentation_bars_trimmed": "trimmed_bars" in row["processing_mode"].split("+"),
@@ -71,6 +84,21 @@ def process(data: bytes, filename: str = "signature.png", max_bytes: int = MAX_B
         data=cleaned, media_type="image/png", extension=".png",
         width=width, height=height, checks=checks, metadata=metadata,
     )
+
+
+def _orientation_detail(row: dict) -> str:
+    degrees = int(row.get("orientation_degrees") or 0)
+    direction = {
+        0: "aucune rotation",
+        90: "rotation de 90° à droite",
+        180: "rotation de 180°",
+        270: "rotation de 90° à gauche",
+    }[degrees]
+    if row.get("orientation_source") == "manual":
+        return f"Réglage manuel appliqué : {direction}."
+    if row.get("orientation_review"):
+        return f"Détection automatique incertaine : {direction}. Confirmez visuellement."
+    return f"Détection automatique : {direction}."
 
 
 def _detail(key: str, row: dict) -> str:

@@ -121,6 +121,10 @@
     'ear_skin_coverage_left': 'Visibilité de l’oreille gauche',
     'ear_skin_coverage_right': 'Visibilité de l’oreille droite',
     'eyes_detected': 'Yeux détectés',
+    'orientation_degrees': 'Rotation appliquée',
+    'orientation_confidence': 'Confiance de détection',
+    'orientation_review': 'Confirmation humaine requise',
+    'orientation_source': 'Origine du réglage',
     'processing_mode': 'Méthode de nettoyage',
     'inverted': 'Couleurs inversées',
     'presentation_bars_trimmed': 'Bandes de présentation retirées',
@@ -140,6 +144,8 @@
   {%- elif value == 'fail' -%}Non conforme
   {%- elif value == 'unknown' -%}Indéterminé
   {%- elif value == 'none' -%}Aucune
+  {%- elif value == 'automatic' -%}Automatique
+  {%- elif value == 'manual' -%}Manuelle
   {%- else -%}{{ value }}
   {%- endif -%}
 {%- endmacro %}

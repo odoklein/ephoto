@@ -67,6 +67,7 @@ def draw_signature(inverted: bool = False) -> bytes:
     cv2.ellipse(canvas, (520, 220), (90, 130), -20, 0, 300, ink, 4, cv2.LINE_AA)
     cv2.polylines(canvas, [np.array([[130, 300], [420, 130], [700, 280], [960, 120]])], False, ink, 4, cv2.LINE_AA)
     cv2.polylines(canvas, [np.array([[600, 300], [720, 180], [780, 300]])], False, ink, 3, cv2.LINE_AA)
+    cv2.line(canvas, (120, 330), (960, 330), ink, 3, cv2.LINE_AA)
     if inverted:
         canvas = cv2.bitwise_not(canvas)
     return cv2.imencode(".png", canvas)[1].tobytes()
@@ -117,6 +118,10 @@ def main() -> int:
     photo_bytes = draw_portrait()
     signature_bytes = draw_signature()
     inverted_signature = draw_signature(inverted=True)
+    inverted_array = cv2.imdecode(np.frombuffer(inverted_signature, np.uint8), cv2.IMREAD_COLOR)
+    rotated_inverted_signature = cv2.imencode(
+        ".png", cv2.rotate(inverted_array, cv2.ROTATE_90_CLOCKWISE)
+    )[1].tobytes()
     api_key = {"X-API-Key": "test-ingest-key"}
     auth = ("controleur", "secret-review")
 
@@ -171,6 +176,10 @@ def main() -> int:
         check("signature 521×134", (state["signature"]["width"], state["signature"]["height"]) == (521, 134),
               f"{state['signature']['width']}×{state['signature']['height']}")
         check("signature conforme", state["signature"]["compliant"] is True, json.dumps(state["signature"])[:300])
+        check("signature déjà droite conservée",
+              state["signature"]["metadata"].get("orientation_degrees") == 0
+              and state["signature"]["metadata"].get("orientation_source") == "automatic",
+              json.dumps(state["signature"]["metadata"])[:300])
 
         # Review panel
         board = client.get("/admin/dashboard", auth=auth)
@@ -186,6 +195,8 @@ def main() -> int:
         check("aucun résidu de gabarit", "{{" not in detail.text and ">None<" not in detail.text)
         check("checklists affichées",
               "Hauteur du visage" in detail.text and "Oreilles visibles" in detail.text and "Fidélité du tracé" in detail.text)
+        check("rotation manuelle disponible", "Corriger l'orientation" in detail.text
+              and f"/admin/submissions/{first}/rotate-signature" in detail.text)
         for kind, expected in (("photo_original", "image/png"), ("photo_clean", "image/jpeg"),
                                ("signature_original", "image/png"), ("signature_clean", "image/png")):
             response = client.get(f"/admin/files/{first}/{kind}", auth=auth)
@@ -227,7 +238,7 @@ def main() -> int:
         response = client.post(
             "/api/v1/ingest", headers=api_key,
             files={"photo": ("face.png", photo_bytes, "image/png"),
-                   "signature": ("sig.png", inverted_signature, "image/png")},
+                   "signature": ("sig.png", rotated_inverted_signature, "image/png")},
             data={"order_id": "WC-10246", "customer": json.dumps({"email": "leo@example.fr"})},
         )
         check("ingest multipart accepté", response.status_code == 202, response.text[:200])
@@ -236,6 +247,23 @@ def main() -> int:
         check("signature inversée détectée", state["signature"]["metadata"].get("inverted") is True,
               json.dumps(state["signature"].get("metadata"))[:200])
         check("signature inversée conforme", state["signature"]["compliant"] is True)
+        check("orientation verticale corrigée automatiquement",
+              state["signature"]["metadata"].get("orientation_degrees") == 270,
+              json.dumps(state["signature"]["metadata"])[:300])
+
+        manual_rotation = client.post(
+            f"/admin/submissions/{second}/rotate-signature", auth=auth,
+            data={"rotation": "180"}, follow_redirects=False,
+        )
+        state = client.get(f"/api/v1/submissions/{second}", headers=api_key).json()
+        check("rotation manuelle appliquée",
+              manual_rotation.status_code == 303
+              and state["signature"]["metadata"].get("orientation_degrees") == 180
+              and state["signature"]["metadata"].get("orientation_source") == "manual",
+              json.dumps(state["signature"]["metadata"])[:300])
+        check("angle de rotation invalide refusé",
+              client.post(f"/admin/submissions/{second}/rotate-signature", auth=auth,
+                          data={"rotation": "45"}).status_code == 422)
         missing_reason = client.post(
             f"/api/v1/validate/{second}", json={"action": "reject", "reason": "   "}, auth=auth
         )

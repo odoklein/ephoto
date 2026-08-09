@@ -355,6 +355,41 @@ def recrop(
     return RedirectResponse(f"/admin/submissions/{submission_id}", status_code=303)
 
 
+@api.post("/admin/submissions/{submission_id}/rotate-signature", include_in_schema=False)
+def rotate_signature(
+    submission_id: str, rotation: int = Form(...),
+    reviewer: str = Depends(require_reviewer),
+) -> RedirectResponse:
+    """Rebuild the signature from its original with a reviewer-selected rotation."""
+    if rotation not in (0, 90, 180, 270):
+        raise HTTPException(422, "Rotation inconnue : utilisez 0, 90, 180 ou 270 degrés.")
+    record = database.get(settings.database_path, submission_id)
+    if record is None:
+        raise HTTPException(404, "Dossier inconnu.")
+    if record["status"] not in database.OPEN_STATUSES:
+        raise HTTPException(409, f"Dossier déjà traité ({record['status']}).")
+    source = storage.find(settings.storage_dir, submission_id, "signature_original")
+    if source is None:
+        raise HTTPException(404, "Signature d'origine absente.")
+
+    result = signature_processor.process(
+        source.read_bytes(), source.name, rotation_degrees=rotation,
+    )
+    if not result.data or result.error:
+        raise HTTPException(422, f"Rotation impossible : {result.error or 'sortie vide'}")
+    storage.write(
+        settings.storage_dir, submission_id, "signature_clean", result.data, result.extension,
+    )
+    database.update(
+        settings.database_path, submission_id,
+        signature_report=json.dumps(result.as_report(), ensure_ascii=False),
+        signature_score=result.score,
+        reviewer=reviewer,
+        error=record["photo_report"].get("error", "") or result.error,
+    )
+    return RedirectResponse(f"/admin/submissions/{submission_id}#signature-review", status_code=303)
+
+
 @api.post("/admin/submissions/{submission_id}/decision", include_in_schema=False)
 def decision_form(
     submission_id: str, action: str = Form(...), note: str = Form(default=""),

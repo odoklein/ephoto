@@ -76,10 +76,19 @@ Ephoto/
 | GET/POST | `/admin/nouveau` | Basic | Création manuelle d'un dossier (test ou comptoir) |
 | GET | `/admin/submissions/{id}` | Basic | Avant/après, métadonnées, checklist, décision |
 | POST | `/admin/submissions/{id}/recrop` | Basic | Recadrage manuel (zoom + décalages) |
+| POST | `/admin/submissions/{id}/rotate-signature` | Basic | Correction manuelle de l'orientation de la signature |
 | GET | `/api/health` | — | État du service et détecteur de visage actif |
 
 La page publique de contrôle de signature reste montée à la racine et garde exactement
 son comportement actuel.
+
+### Orientation de la signature
+
+Le service détecte les signatures verticales ou retournées et applique automatiquement
+une rotation à angle droit avant le nettoyage et l'export. La rotation, sa confiance et
+son origine sont conservées dans les métadonnées du rapport. Une détection ambiguë est
+affichée comme indéterminée au contrôleur, qui peut choisir 0°, 90°, 180° ou 270°
+depuis la fiche du dossier. Le recalcul repart toujours de l'original et ne l'écrase pas.
 
 ### Variables d'environnement
 

@@ -61,6 +61,11 @@ POLARITY_SAMPLE_PX = 512
 # only the paper residual.
 POLARITY_QUANTILE = 0.10
 INK_PEAK_QUANTILE = 99.98
+# A signature is expected to read horizontally.  The remaining 0°/180° choice cannot
+# be proven from pixels alone, so the layout heuristic is deliberately exposed as a
+# confidence value and the reviewer can override it in the control panel.
+ORIENTATION_REVIEW_CONFIDENCE = 0.18
+ORIENTATION_SQUARE_BAND = 1.20
 
 
 @dataclass
@@ -91,6 +96,20 @@ class ReportRow:
     raw_components: int | None
     output_components: int | None
     processing_mode: str = ""
+    orientation_degrees: int = 0
+    orientation_confidence: float | None = None
+    orientation_review: bool = False
+    orientation_source: str = "automatic"
+
+
+@dataclass(frozen=True)
+class Orientation:
+    """Right-angle correction applied clockwise to the submitted pixels."""
+
+    degrees: int
+    confidence: float
+    review: bool
+    source: str = "automatic"
 
 
 def load_bgr(path: Path) -> np.ndarray:
@@ -100,6 +119,66 @@ def load_bgr(path: Path) -> np.ndarray:
     if image is None:
         raise ValueError("OpenCV could not decode this image")
     return image
+
+
+def rotate_clockwise(image: np.ndarray, degrees: int) -> np.ndarray:
+    """Rotate an image by a validated clockwise right angle."""
+    degrees %= 360
+    if degrees == 0:
+        return image.copy()
+    if degrees == 90:
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    if degrees == 180:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    if degrees == 270:
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    raise ValueError("Rotation must be 0, 90, 180 or 270 degrees")
+
+
+def _upright_layout_score(mask: np.ndarray) -> float:
+    """Estimate whether horizontal handwriting reads in its natural direction.
+
+    Signatures usually carry their densest baseline in the lower half and begin with
+    more ink than they end with.  Those two weak signals are useful together, but they
+    remain a heuristic; callers must retain the confidence and manual override.
+    """
+    points = cv2.findNonZero(mask)
+    if points is None:
+        return 0.5
+    x, y, width, height = cv2.boundingRect(points)
+    crop = (mask[y : y + height, x : x + width] > 0).astype(np.float32)
+    if width < 2 or height < 2:
+        return 0.5
+
+    rows = crop.sum(axis=1)
+    window = max(3, (height // 18) | 1)
+    rows = np.convolve(rows, np.ones(window, dtype=np.float32) / window, mode="same")
+    baseline = float(np.argmax(rows)) / max(height - 1, 1)
+
+    moments = cv2.moments(crop)
+    centroid_x = (moments["m10"] / moments["m00"]) / max(width - 1, 1)
+    left_weight = 1.0 - float(centroid_x)
+    return float(np.clip(0.68 * baseline + 0.32 * left_weight, 0.0, 1.0))
+
+
+def detect_orientation(mask: np.ndarray) -> Orientation:
+    """Choose a right-angle correction and flag geometrically ambiguous cases."""
+    points = cv2.findNonZero(mask)
+    if points is None:
+        return Orientation(0, 0.0, True)
+    _, _, width, height = cv2.boundingRect(points)
+    if width < 2 or height < 2:
+        return Orientation(0, 0.0, True)
+
+    aspect = width / height
+    if 1 / ORIENTATION_SQUARE_BAND < aspect < ORIENTATION_SQUARE_BAND:
+        return Orientation(0, 0.0, True)
+
+    candidates = (0, 180) if aspect >= 1 else (90, 270)
+    scored = [(_upright_layout_score(rotate_clockwise(mask, angle)), angle) for angle in candidates]
+    scored.sort(reverse=True)
+    confidence = min(1.0, abs(scored[0][0] - scored[1][0]))
+    return Orientation(scored[0][1], confidence, confidence < ORIENTATION_REVIEW_CONFIDENCE)
 
 
 def trim_presentation_bars(image: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -382,16 +461,34 @@ def evaluate(name: str, output: Path, raw_mask: np.ndarray, raw_box: tuple[int, 
     return ReportRow(name, *("pass" if c else "fail" for c in checks), round(100 * sum(checks) / len(checks)), ";".join(failures), str(output), raw_density, output_density, raw_components, output_components, mode)
 
 
-def process_files(inputs: Iterable[Path], output_dir: Path, margin: int, max_bytes: int) -> list[ReportRow]:
+def process_files(
+    inputs: Iterable[Path], output_dir: Path, margin: int, max_bytes: int,
+    rotation_degrees: int | None = None,
+) -> list[ReportRow]:
+    if rotation_degrees is not None and rotation_degrees not in (0, 90, 180, 270):
+        raise ValueError("rotation_degrees must be 0, 90, 180 or 270")
     output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[ReportRow] = []
     for source in inputs:
         target = output_dir / f"{source.stem}_ephoto.png"
+        orientation = Orientation(0, 0.0, True)
         try:
             image, bars_trimmed = trim_presentation_bars(load_bgr(source))
             image, inverted = normalise_polarity(image)
             strength = ink_strength(image)
             raw = basic_raw_mask(image, strength)
+            if rotation_degrees is None:
+                orientation = detect_orientation(raw)
+                if orientation.degrees:
+                    image = rotate_clockwise(image, orientation.degrees)
+                    strength = rotate_clockwise(strength, orientation.degrees)
+                    raw = rotate_clockwise(raw, orientation.degrees)
+            else:
+                orientation = Orientation(rotation_degrees, 1.0, False, "manual")
+                if rotation_degrees:
+                    image = rotate_clockwise(image, rotation_degrees)
+                    strength = rotate_clockwise(strength, rotation_degrees)
+                    raw = rotate_clockwise(raw, rotation_degrees)
             mask, mode = ink_mask(image, strength, raw)
             result, raw_box, geometry = crop_and_canvas(mask, strength, margin)
             target.write_bytes(png_bytes(result))
@@ -399,10 +496,20 @@ def process_files(inputs: Iterable[Path], output_dir: Path, margin: int, max_byt
             # sheets arrived as light ink on a dark background.
             label = "+".join(part for part, enabled in (
                 (mode, True), ("inverted", inverted), ("trimmed_bars", bars_trimmed),
+                (f"rotated_{orientation.degrees}_{orientation.source}", bool(orientation.degrees)),
             ) if enabled)
-            rows.append(evaluate(source.name, target, raw, raw_box, max_bytes, label, geometry))
+            row = evaluate(source.name, target, raw, raw_box, max_bytes, label, geometry)
+            row.orientation_degrees = orientation.degrees
+            row.orientation_confidence = round(orientation.confidence, 3)
+            row.orientation_review = orientation.review
+            row.orientation_source = orientation.source
+            rows.append(row)
         except Exception as exc:
-            rows.append(ReportRow(source.name, "fail", "fail", "fail", "fail", "fail", 0, str(exc), "", None, None, None, None, "error"))
+            rows.append(ReportRow(
+                source.name, "fail", "fail", "fail", "fail", "fail", 0, str(exc), "",
+                None, None, None, None, "error", orientation.degrees,
+                round(orientation.confidence, 3), True, orientation.source,
+            ))
     return rows
 
 
