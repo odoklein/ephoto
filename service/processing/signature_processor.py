@@ -93,7 +93,7 @@ def _orientation_detail(row: dict) -> str:
         90: "rotation de 90° à droite",
         180: "rotation de 180°",
         270: "rotation de 90° à gauche",
-    }[degrees]
+    }.get(degrees % 360, f"rotation de {degrees}°")
     if row.get("orientation_source") == "manual":
         return f"Réglage manuel appliqué : {direction}."
     if row.get("orientation_review"):

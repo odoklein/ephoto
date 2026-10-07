@@ -225,16 +225,12 @@
               <fieldset>
                 <legend class="text-sm font-medium text-slate-900">Rotation à appliquer à la signature reçue</legend>
                 <p class="mt-1 max-w-2xl text-xs leading-5 text-slate-600">Le fichier original reste intact. La sortie Ephoto sera entièrement recalculée après votre choix.</p>
-                <div class="mt-4 grid gap-2 sm:grid-cols-2">
-                  {% for degrees, label, hint in [(0, 'Aucune rotation', 'Conserver le haut actuel'), (90, '90° à droite', 'Tourner dans le sens horaire'), (180, 'Demi-tour', 'Retourner complètement'), (270, '90° à gauche', 'Tourner dans le sens antihoraire')] %}
-                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border bg-white p-3 transition hover:border-teal-400 {{ 'border-teal-600 ring-2 ring-teal-100' if current_rotation == degrees else 'border-slate-200' }}">
-                      <input type="radio" name="rotation" value="{{ degrees }}" {% if current_rotation == degrees %}checked{% endif %} class="mt-0.5 h-4 w-4 accent-teal-700">
-                      <span>
-                        <span class="block text-sm font-medium text-slate-900">{{ label }}</span>
-                        <span class="mt-0.5 block text-xs text-slate-500">{{ hint }}</span>
-                      </span>
-                    </label>
-                  {% endfor %}
+                <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label class="block text-xs font-medium text-slate-700" for="rotation">Angle (degrés)</label>
+                    <input id="rotation" name="rotation" type="number" step="1" value="{{ current_rotation }}" class="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
+                    <p class="mt-1 text-xs text-slate-500">Positif dans le sens horaire, négatif en antihoraire.</p>
+                  </div>
                 </div>
               </fieldset>
               <div class="mt-4 flex flex-wrap items-center gap-3">

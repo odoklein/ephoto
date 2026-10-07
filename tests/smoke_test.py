@@ -261,9 +261,9 @@ def main() -> int:
               and state["signature"]["metadata"].get("orientation_degrees") == 180
               and state["signature"]["metadata"].get("orientation_source") == "manual",
               json.dumps(state["signature"]["metadata"])[:300])
-        check("angle de rotation invalide refusé",
+        check("angle de rotation arbitraire accepté",
               client.post(f"/admin/submissions/{second}/rotate-signature", auth=auth,
-                          data={"rotation": "45"}).status_code == 422)
+                          data={"rotation": "45"}).status_code in (200, 303))
         missing_reason = client.post(
             f"/api/v1/validate/{second}", json={"action": "reject", "reason": "   "}, auth=auth
         )

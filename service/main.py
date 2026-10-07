@@ -361,8 +361,6 @@ def rotate_signature(
     reviewer: str = Depends(require_reviewer),
 ) -> RedirectResponse:
     """Rebuild the signature from its original with a reviewer-selected rotation."""
-    if rotation not in (0, 90, 180, 270):
-        raise HTTPException(422, "Rotation inconnue : utilisez 0, 90, 180 ou 270 degrés.")
     record = database.get(settings.database_path, submission_id)
     if record is None:
         raise HTTPException(404, "Dossier inconnu.")

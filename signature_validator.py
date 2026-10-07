@@ -113,26 +113,56 @@ class Orientation:
 
 
 def load_bgr(path: Path) -> np.ndarray:
-    """Read Unicode Windows paths reliably."""
+    """Read Unicode Windows paths reliably, applying EXIF explicitly."""
     raw = np.fromfile(str(path), dtype=np.uint8)
-    image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    image = cv2.imdecode(raw, cv2.IMREAD_COLOR | getattr(cv2, "IMREAD_IGNORE_ORIENTATION", 128))
     if image is None:
         raise ValueError("OpenCV could not decode this image")
+        
+    orientation = 1
+    try:
+        with Image.open(io.BytesIO(raw)) as pil_img:
+            exif = pil_img.getexif()
+            if exif:
+                orientation = exif.get(0x0112, 1)
+    except Exception:
+        pass
+
+    if orientation == 3:
+        image = cv2.rotate(image, cv2.ROTATE_180)
+    elif orientation == 6:
+        image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    elif orientation == 8:
+        image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
     return image
 
 
-def rotate_clockwise(image: np.ndarray, degrees: int) -> np.ndarray:
-    """Rotate an image by a validated clockwise right angle."""
-    degrees %= 360
-    if degrees == 0:
+def rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate an image by a clockwise angle in degrees."""
+    angle %= 360
+    if angle == 0:
         return image.copy()
-    if degrees == 90:
+    if angle == 90:
         return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    if degrees == 180:
+    if angle == 180:
         return cv2.rotate(image, cv2.ROTATE_180)
-    if degrees == 270:
+    if angle == 270:
         return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    raise ValueError("Rotation must be 0, 90, 180 or 270 degrees")
+        
+    h, w = image.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    # getRotationMatrix2D uses counter-clockwise angle, so use -angle
+    m = cv2.getRotationMatrix2D(center, -angle, 1.0)
+    abs_cos = abs(m[0, 0])
+    abs_sin = abs(m[0, 1])
+    bound_w = int(h * abs_sin + w * abs_cos)
+    bound_h = int(h * abs_cos + w * abs_sin)
+    m[0, 2] += bound_w / 2 - center[0]
+    m[1, 2] += bound_h / 2 - center[1]
+    
+    border_value = (255, 255, 255) if len(image.shape) == 3 else 0
+    return cv2.warpAffine(image, m, (bound_w, bound_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
 
 
 def _upright_layout_score(mask: np.ndarray) -> float:
@@ -162,7 +192,7 @@ def _upright_layout_score(mask: np.ndarray) -> float:
 
 
 def detect_orientation(mask: np.ndarray) -> Orientation:
-    """Choose a right-angle correction and flag geometrically ambiguous cases."""
+    """Choose a right-angle correction (and skew) and flag geometrically ambiguous cases."""
     points = cv2.findNonZero(mask)
     if points is None:
         return Orientation(0, 0.0, True)
@@ -170,15 +200,35 @@ def detect_orientation(mask: np.ndarray) -> Orientation:
     if width < 2 or height < 2:
         return Orientation(0, 0.0, True)
 
-    aspect = width / height
-    if 1 / ORIENTATION_SQUARE_BAND < aspect < ORIENTATION_SQUARE_BAND:
+    pts = points.reshape(-1, 2).astype(np.float64)
+    _, eigenvectors, _ = cv2.PCACompute2(pts, mean=None)
+    dx, dy = eigenvectors[0]
+    skew_angle = np.degrees(np.arctan2(dy, dx))
+    
+    base_angle = -skew_angle
+    if base_angle >= 90:
+        base_angle -= 180
+    elif base_angle < -90:
+        base_angle += 180
+
+    deskewed_mask = rotate_image(mask, base_angle)
+    points_deskewed = cv2.findNonZero(deskewed_mask)
+    if points_deskewed is None:
         return Orientation(0, 0.0, True)
+    
+    _, _, w, h = cv2.boundingRect(points_deskewed)
+    aspect = w / h if h > 0 else 1.0
+
+    if 1 / ORIENTATION_SQUARE_BAND < aspect < ORIENTATION_SQUARE_BAND:
+        return Orientation(int(round(base_angle)) % 360, 0.0, True)
 
     candidates = (0, 180) if aspect >= 1 else (90, 270)
-    scored = [(_upright_layout_score(rotate_clockwise(mask, angle)), angle) for angle in candidates]
+    scored = [(_upright_layout_score(rotate_image(deskewed_mask, angle)), angle) for angle in candidates]
     scored.sort(reverse=True)
     confidence = min(1.0, abs(scored[0][0] - scored[1][0]))
-    return Orientation(scored[0][1], confidence, confidence < ORIENTATION_REVIEW_CONFIDENCE)
+    
+    final_angle = (base_angle + scored[0][1]) % 360
+    return Orientation(int(round(final_angle)) % 360, confidence, confidence < ORIENTATION_REVIEW_CONFIDENCE)
 
 
 def trim_presentation_bars(image: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -403,7 +453,7 @@ def crop_and_canvas(mask: np.ndarray, strength: np.ndarray, margin: int) -> tupl
 def png_bytes(image: np.ndarray) -> bytes:
     pil = Image.fromarray(image, mode="L")
     stream = io.BytesIO()
-    pil.save(stream, format="PNG", optimize=True, compress_level=9)
+    pil.save(stream, format="PNG", optimize=True, compress_level=9, dpi=(300, 300))
     return stream.getvalue()
 
 
@@ -465,8 +515,6 @@ def process_files(
     inputs: Iterable[Path], output_dir: Path, margin: int, max_bytes: int,
     rotation_degrees: int | None = None,
 ) -> list[ReportRow]:
-    if rotation_degrees is not None and rotation_degrees not in (0, 90, 180, 270):
-        raise ValueError("rotation_degrees must be 0, 90, 180 or 270")
     output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[ReportRow] = []
     for source in inputs:
@@ -480,15 +528,15 @@ def process_files(
             if rotation_degrees is None:
                 orientation = detect_orientation(raw)
                 if orientation.degrees:
-                    image = rotate_clockwise(image, orientation.degrees)
-                    strength = rotate_clockwise(strength, orientation.degrees)
-                    raw = rotate_clockwise(raw, orientation.degrees)
+                    image = rotate_image(image, orientation.degrees)
+                    strength = rotate_image(strength, orientation.degrees)
+                    raw = rotate_image(raw, orientation.degrees)
             else:
                 orientation = Orientation(rotation_degrees, 1.0, False, "manual")
                 if rotation_degrees:
-                    image = rotate_clockwise(image, rotation_degrees)
-                    strength = rotate_clockwise(strength, rotation_degrees)
-                    raw = rotate_clockwise(raw, rotation_degrees)
+                    image = rotate_image(image, rotation_degrees)
+                    strength = rotate_image(strength, rotation_degrees)
+                    raw = rotate_image(raw, rotation_degrees)
             mask, mode = ink_mask(image, strength, raw)
             result, raw_box, geometry = crop_and_canvas(mask, strength, margin)
             target.write_bytes(png_bytes(result))
