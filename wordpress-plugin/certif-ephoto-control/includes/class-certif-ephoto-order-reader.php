@@ -101,13 +101,14 @@ class Certif_Ephoto_Order_Reader {
 					}
 				}
 
-				// B. Standard item meta (URLs only, never attachment ids).
+				// B. Standard item meta (URLs, or image attachment IDs if key matches).
 				foreach ( $item->get_meta_data() as $meta ) {
 					$key = (string) $meta->key;
 					if ( '_tmcartepo_data' === $key ) {
 						continue;
 					}
-					$url = self::clean_url( $meta->value, false );
+					$is_candidate = self::is_photo_field( $key, '' ) || self::is_signature_field( $key, '' );
+					$url = self::clean_url( $meta->value, $is_candidate );
 					if ( '' === $url ) {
 						continue;
 					}
@@ -124,14 +125,15 @@ class Certif_Ephoto_Order_Reader {
 			}
 		}
 
-		// 3. Fallback: order-level meta (URLs only, plugin's own meta ignored).
+		// 3. Fallback: order-level meta (URLs or attachment IDs for candidate keys).
 		if ( '' === $photo_url || '' === $signature_url ) {
 			foreach ( $order->get_meta_data() as $meta ) {
 				$key = (string) $meta->key;
 				if ( 0 === strpos( $key, '_certif_ephoto_' ) ) {
 					continue;
 				}
-				$url = self::clean_url( $meta->value, false );
+				$is_candidate = self::is_photo_field( $key, '' ) || self::is_signature_field( $key, '' );
+				$url = self::clean_url( $meta->value, $is_candidate );
 				if ( '' === $url ) {
 					continue;
 				}

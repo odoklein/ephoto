@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       Certif ID – Contrôle photos ANTS & Signature
- * Description:       Contrôle des photos d'identité (norme ANTS) et des signatures depuis WooCommerce, avec assistance IA et transmission Make / ePhoto par le service de contrôle.
- * Version:           2.1.0
+ * Description:       Contrôle de conformité des photos d'identité (norme ANTS) et des signatures depuis WooCommerce, avec recadrage et transmission Make / ePhoto.
+ * Version:           2.1.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            Suzali
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'CERTIF_EPHOTO_VERSION', '2.1.0' );
+define( 'CERTIF_EPHOTO_VERSION', '2.1.1' );
 define( 'CERTIF_EPHOTO_FILE', __FILE__ );
 define( 'CERTIF_EPHOTO_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CERTIF_EPHOTO_URL', plugin_dir_url( __FILE__ ) );

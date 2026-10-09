@@ -1,6 +1,6 @@
 # Certif ID – Contrôle photos ANTS & Signature (plugin WordPress)
 
-Version 2.1.0. Écran de contrôle WooCommerce branché sur le service Python de contrôle photo/signature.
+Version 2.1.1. Écran de contrôle WooCommerce branché sur le service Python de contrôle photo/signature.
 
 ## Installation
 
@@ -13,17 +13,18 @@ Les valeurs peuvent aussi être définies dans `wp-config.php` ; elles sont alor
 ```php
 define( 'CERTIF_EPHOTO_SERVICE_URL', 'https://photos.exemple.fr' );
 define( 'CERTIF_EPHOTO_API_KEY', '...' );        // INGEST_API_KEY du service
-define( 'CERTIF_EPHOTO_REVIEW_API_KEY', '...' ); // REVIEW_API_KEY du service
+define( 'CERTIF_EPHOTO_REVIEW_API_KEY', '...' ); // Optionnel : REVIEW_API_KEY du service (si vide, utilise INGEST_API_KEY)
 ```
 
-## Les deux clés
+## Les clés d'API
 
 | Réglage | Variable du service | Utilisée pour |
 |---|---|---|
 | Clé d'ingestion | `INGEST_API_KEY` | `POST /api/v1/ingest` (envoi des dossiers, y compris en tâche de fond) |
 | Clé de contrôle | `REVIEW_API_KEY` | lecture des dossiers, images, recadrage, rotation, acceptation / refus |
 
-- Si la clé de contrôle est vide, la clé d'ingestion est envoyée à la place. Le service refusant la clé d'ingestion sur les routes de contrôle, ce repli ne marche que si `REVIEW_API_KEY` vaut la même chose côté service : renseignez plutôt les deux clés.
+- **Clé unique (recommandé pour simplifier)** : définissez simplement `INGEST_API_KEY` sur le service. Le service et le plugin réutilisent automatiquement cette clé pour le contrôle si `REVIEW_API_KEY` est omise.
+- **Clés distinctes (sécurité renforcée)** : vous pouvez définir une `REVIEW_API_KEY` distincte pour que la clé Make ne puisse pas valider de dossiers ni consulter les images de contrôle.
 - Les clés partent uniquement dans l'en-tête `X-API-Key`, jamais dans une URL ni vers le navigateur : les images passent par un proxy authentifié (`admin-ajax.php?action=certif_ephoto_image`).
 - Chaque appel de contrôle envoie `X-Reviewer-User` = identifiant WordPress du contrôleur (journal d'audit du service).
 - Les champs secrets ne réaffichent jamais leur valeur ; laisser le champ vide conserve la clé enregistrée.
@@ -35,7 +36,7 @@ Les dossiers doivent arriver au service par **un seul** chemin :
 - soit l'**envoi automatique** du plugin (case « Envoi automatique », activée par défaut) : à la commande payée, l'envoi est planifié en arrière-plan (Action Scheduler) ; en cas d'échec une note est ajoutée à la commande ;
 - soit le **scénario Make A/A2** qui appelle `/api/v1/ingest` : dans ce cas, décocher l'envoi automatique.
 
-Le bouton **Lancer l'IA** reste disponible : si le service a déjà le dossier (mêmes fichiers), il renvoie le dossier existant (`duplicate: true`), qui est simplement rattaché à la commande. Un dossier en cours, prêt à contrôler ou accepté n'est jamais renvoyé ; « Relancer l'IA » n'existe que pour un dossier refusé, en erreur ou purgé.
+Le bouton **Lancer l'analyse** reste disponible : si le service a déjà le dossier (mêmes fichiers), il renvoie le dossier existant (`duplicate: true`), qui est simplement rattaché à la commande. Un dossier en cours, prêt à contrôler ou accepté n'est jamais renvoyé ; « Relancer l'analyse » n'existe que pour un dossier refusé, en erreur ou purgé.
 
 La transmission vers Make / ePhoto après acceptation est faite par le service (`MAKE_WEBHOOK_URL`), pas par WordPress.
 

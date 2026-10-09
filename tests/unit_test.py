@@ -18,6 +18,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PROJECT = Path(__file__).resolve().parents[1]
 STORE = Path(tempfile.mkdtemp(prefix="ephoto-unit-"))
 failures: list[str] = []

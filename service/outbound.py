@@ -109,7 +109,7 @@ def check_url(url: str, allowed_hosts: tuple[str, ...] = ()) -> None:
         address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
         if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
             address = address.ipv4_mapped
-        if not address.is_global:
+        if not address.is_global and not settings.allow_private_hosts:
             raise FetchError(f"hôte {host} résout vers une adresse non publique ({address})")
 
 

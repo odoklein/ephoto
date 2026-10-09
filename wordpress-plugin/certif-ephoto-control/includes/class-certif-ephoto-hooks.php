@@ -104,7 +104,7 @@ class Certif_Ephoto_Hooks {
 		if ( $order instanceof WC_Order ) {
 			$order->add_order_note(
 				sprintf(
-					__( '[Certif ID] Échec de l’envoi automatique au service de contrôle : %s. Utilisez « Lancer l’IA » dans Contrôle photos après correction.', 'certif-ephoto-control' ),
+					__( '[Certif ID] Échec de l’envoi automatique au service de contrôle : %s. Utilisez « Lancer l’analyse » dans Contrôle photos après correction.', 'certif-ephoto-control' ),
 					$result->get_error_message()
 				)
 			);

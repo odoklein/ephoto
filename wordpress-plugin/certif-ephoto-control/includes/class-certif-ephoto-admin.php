@@ -143,7 +143,7 @@ class Certif_Ephoto_Admin {
 					'titlePrefix'       => __( 'Examen du dossier — Commande #', 'certif-ephoto-control' ),
 					'processing'        => __( 'Traitement en cours par le service… actualisation automatique toutes les 3 secondes.', 'certif-ephoto-control' ),
 					'processingTimeout' => __( 'Le traitement prend plus de temps que prévu. Fermez puis rouvrez le dossier dans quelques minutes.', 'certif-ephoto-control' ),
-					'notReady'          => __( 'Ce dossier n’est pas prêt à être accepté (fichier manquant ou analyse incomplète). Ajustez-le, relancez l’IA ou refusez-le.', 'certif-ephoto-control' ),
+					'notReady'          => __( 'Ce dossier n’est pas prêt à être accepté (fichier manquant ou analyse incomplète). Ajustez-le, relancez l’analyse ou refusez-le.', 'certif-ephoto-control' ),
 					'readyToReview'     => __( 'Prêt à contrôler.', 'certif-ephoto-control' ),
 					'errorStatus'       => __( 'Erreur de traitement :', 'certif-ephoto-control' ),
 					'acceptedStatus'    => __( 'Dossier accepté', 'certif-ephoto-control' ),
@@ -411,12 +411,12 @@ class Certif_Ephoto_Admin {
 												<?php if ( in_array( $st, array( 'rejected', 'error', 'missing' ), true ) ) : ?>
 													<button type="button" class="button button-secondary btn-sync" data-order-id="<?php echo esc_attr( $oid ); ?>"
 														data-confirm="<?php esc_attr_e( 'Relancer l’analyse créera un nouveau dossier sur le service. Continuer ?', 'certif-ephoto-control' ); ?>">
-														⚡ <?php esc_html_e( 'Relancer l’IA', 'certif-ephoto-control' ); ?>
+														<?php esc_html_e( 'Relancer l’analyse', 'certif-ephoto-control' ); ?>
 													</button>
 												<?php endif; ?>
 											<?php else : ?>
 												<button type="button" class="button button-secondary btn-sync" data-order-id="<?php echo esc_attr( $oid ); ?>">
-													⚡ <?php esc_html_e( 'Lancer l’IA', 'certif-ephoto-control' ); ?>
+													<?php esc_html_e( 'Lancer l’analyse', 'certif-ephoto-control' ); ?>
 												</button>
 											<?php endif; ?>
 										</div>
@@ -445,7 +445,7 @@ class Certif_Ephoto_Admin {
 					<div class="certif-modal-body">
 						<div id="modal-loading-indicator" class="modal-loading">
 							<span class="spinner is-active" style="float:none;"></span>
-							<p><?php esc_html_e( 'Chargement des analyses et contrôles ANTS...', 'certif-ephoto-control' ); ?></p>
+							<p><?php esc_html_e( 'Chargement du contrôle de conformité ANTS...', 'certif-ephoto-control' ); ?></p>
 						</div>
 
 						<div id="modal-error-box" class="certif-modal-banner banner-error" style="display:none;"></div>
@@ -639,7 +639,7 @@ class Certif_Ephoto_Admin {
 		if ( '' === $sub_id ) {
 			wp_send_json_error(
 				array(
-					'message'  => __( 'Aucun dossier n’a encore été envoyé au service pour cette commande. Utilisez « Lancer l’IA ».', 'certif-ephoto-control' ),
+					'message'  => __( 'Aucun dossier n’a encore été envoyé au service pour cette commande. Utilisez « Lancer l’analyse ».', 'certif-ephoto-control' ),
 					'order_id' => $order->get_id(),
 					'status'   => 'to_send',
 				)
@@ -955,7 +955,7 @@ class Certif_Ephoto_Admin {
 	}
 
 	/**
-	 * AJAX: explicit ingest ("Lancer l'IA" / "Relancer l'IA").
+	 * AJAX: explicit ingest ("Lancer l'analyse" / "Relancer l'analyse").
 	 * Live dossiers (processing/pending/accepted) are never re-sent.
 	 */
 	public static function ajax_sync_order() {
@@ -1014,11 +1014,14 @@ class Certif_Ephoto_Admin {
 
 		$file = Certif_Ephoto_Client::fetch_file( $sub_id, $kind );
 		if ( is_wp_error( $file ) ) {
+			if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+				error_log( sprintf( '[Certif ID] ajax_image: échec de récupération du fichier %s pour la commande #%d : %s', $kind, $order_id, $file->get_error_message() ) );
+			}
 			self::image_error( 404 === Certif_Ephoto_Client::error_status( $file ) ? 404 : 502 );
 		}
 
 		$type = strtolower( trim( (string) strtok( (string) $file['content_type'], ';' ) ) );
-		if ( ! in_array( $type, array( 'image/jpeg', 'image/png', 'image/webp' ), true ) || '' === $file['body'] ) {
+		if ( ! in_array( $type, array( 'image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/x-ms-bmp', 'image/tiff' ), true ) || '' === $file['body'] ) {
 			self::image_error( 502 );
 		}
 

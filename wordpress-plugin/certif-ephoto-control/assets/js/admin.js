@@ -109,7 +109,7 @@
 		$('#modal-status-banner').hide().text('');
 		$('#modal-forward-status').text('');
 		$('#modal-photo-checks, #modal-sign-checks').empty();
-		$('#modal-photo-orig, #modal-photo-clean, #modal-sign-orig, #modal-sign-clean').removeAttr('src');
+		$('#modal-photo-orig, #modal-photo-clean, #modal-sign-orig, #modal-sign-clean').off('error.certif').removeAttr('src');
 		$('#slider-zoom').val('1');
 		$('#slider-dx, #slider-dy').val('0');
 		$('#rotate-free-angle').val('0');
@@ -249,12 +249,15 @@
 	function setImage($img, orderId, kind, available, refresh) {
 		var $box = $img.closest('.img-box');
 		if (available && orderId) {
+			$img.off('error.certif').on('error.certif', function () {
+				$box.addClass('is-missing');
+			});
 			if (refresh || !$img.attr('src')) {
 				$img.attr('src', imageUrl(orderId, kind));
 			}
 			$box.removeClass('is-missing');
 		} else {
-			$img.removeAttr('src');
+			$img.off('error.certif').removeAttr('src');
 			$box.addClass('is-missing');
 		}
 	}
@@ -437,7 +440,7 @@
 			openReviewModal($(this).data('order-id'));
 		});
 
-		// Explicit ingest ("Lancer l'IA" / "Relancer l'IA").
+		// Explicit ingest ("Lancer l'analyse" / "Relancer l'analyse").
 		$(document).on('click', '.btn-sync', function (e) {
 			e.preventDefault();
 			var $btn = $(this);

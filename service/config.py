@@ -78,6 +78,7 @@ class Settings:
     fetch_allowed_hosts: tuple[str, ...]
     # Deployment expects MediaPipe: /api/health reports "degraded" without it.
     require_face_mesh: bool
+    allow_private_hosts: bool
     log_level: str
     warnings: tuple[str, ...] = field(default=(), compare=False)
 
@@ -113,8 +114,8 @@ def load_settings() -> Settings:
         warnings.append("MAKE_WEBHOOK_URL n'est pas en HTTPS : les images d'identité circuleraient en clair")
 
     ingest_key = os.environ.get("INGEST_API_KEY", "").strip()
-    review_key = os.environ.get("REVIEW_API_KEY", "").strip()
-    if ingest_key and review_key and ingest_key == review_key:
+    review_key = os.environ.get("REVIEW_API_KEY", "").strip() or ingest_key
+    if ingest_key and review_key and ingest_key == review_key and os.environ.get("REVIEW_API_KEY", "").strip():
         warnings.append("REVIEW_API_KEY = INGEST_API_KEY : la clé Make peut aussi valider des dossiers")
     for name, value in (("INGEST_API_KEY", ingest_key), ("REVIEW_API_KEY", review_key)):
         if value and len(value) < 24:
@@ -142,6 +143,7 @@ def load_settings() -> Settings:
         processing_workers=_int("PROCESSING_WORKERS", 2, minimum=1),
         fetch_allowed_hosts=_list("FETCH_ALLOWED_HOSTS"),
         require_face_mesh=_bool("REQUIRE_FACE_MESH", False),
+        allow_private_hosts=_bool("ALLOW_PRIVATE_HOSTS", False),
         log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper() or "INFO",
         warnings=tuple(warnings),
     )

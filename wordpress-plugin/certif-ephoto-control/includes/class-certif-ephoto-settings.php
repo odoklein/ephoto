@@ -361,7 +361,7 @@ class Certif_Ephoto_Settings {
 					self::render_secret_field(
 						'certif_ephoto_review_key',
 						__( 'Clé de contrôle (REVIEW_API_KEY)', 'certif-ephoto-control' ),
-						__( 'Utilisée pour l’écran de contrôle : lecture des dossiers, images, recadrage, rotation, acceptation / refus. Si vide, la clé d’ingestion est envoyée à la place, ce qui ne fonctionne que si REVIEW_API_KEY du service a la même valeur (le service refuse la clé d’ingestion pour le contrôle).', 'certif-ephoto-control' )
+						__( 'Utilisée pour l’écran de contrôle : lecture des dossiers, images, recadrage, rotation, acceptation / refus. Si laissée vide, la clé d’ingestion est utilisée automatiquement (recommandé si vous utilisez une clé unique).', 'certif-ephoto-control' )
 					);
 					?>
 

@@ -14,7 +14,7 @@ services:
       - STORAGE_DIR=/data
       # Secrets: define them in Dokploy (Environment), never in this file.
       - INGEST_API_KEY=${INGEST_API_KEY}
-      - REVIEW_API_KEY=${REVIEW_API_KEY:-}
+      - REVIEW_API_KEY=${REVIEW_API_KEY:-${INGEST_API_KEY:-}}
       - ADMIN_USER=${ADMIN_USER}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - MAKE_WEBHOOK_URL=${MAKE_WEBHOOK_URL}
