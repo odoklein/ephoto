@@ -106,6 +106,7 @@ def require_ingest_key(request: Request) -> str:
     _guard(request)
     if not _same(_supplied_key(request), settings.ingest_api_key):
         raise _refuse(request, "Clé d'API invalide.")
+    limiter.reset(_client(request))
     return "ingest"
 
 
@@ -115,10 +116,10 @@ def require_reader(request: Request) -> str:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Aucune clé d'API n'est configurée sur le serveur.")
     _guard(request)
     supplied = _supplied_key(request)
-    if _same(supplied, settings.ingest_api_key):
-        return "ingest"
-    if _same(supplied, settings.review_api_key):
-        return "review"
+    for name, expected in (("ingest", settings.ingest_api_key), ("review", settings.review_api_key)):
+        if _same(supplied, expected):
+            limiter.reset(_client(request))
+            return name
     raise _refuse(request, "Clé d'API invalide.")
 
 
@@ -142,6 +143,9 @@ def require_reviewer(request: Request, credentials: HTTPBasicCredentials | None 
         # to Basic: the caller clearly meant to use a key, and the ingest key — however
         # valid for /ingest — grants no review rights here.
         if settings.review_key_enabled and _same(supplied, settings.review_api_key):
+            # Every WordPress reviewer shares the shop server's address: a good key
+            # clears the count so one mistyped setting cannot lock them all out.
+            limiter.reset(_client(request))
             request.state.auth_channel = "api"
             return f"{reviewer_name(request.headers.get('x-reviewer-user', ''))} (API)"
         raise _refuse(request, "Clé de contrôle invalide.")
