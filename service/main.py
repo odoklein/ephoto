@@ -183,17 +183,25 @@ async def ingest(
 
 @api.get("/api/v1/submissions/{submission_id}", dependencies=[Depends(require_ingest_key)])
 def submission_status(submission_id: str) -> dict:
-    """Polling endpoint for Make: status and both conformity reports."""
+    """Polling endpoint for Make and WordPress: status and both conformity reports."""
     record = database.get(settings.database_path, submission_id)
     if record is None:
         raise HTTPException(404, "Dossier inconnu.")
+    files = _file_map(submission_id)
     return {
         "submission_id": record["id"],
         "status": record["status"],
         "photo": record["photo_report"],
         "signature": record["signature_report"],
+        "photo_score": record["photo_score"],
+        "signature_score": record["signature_score"],
         "forward_status": record["forward_status"],
         "reviewer_note": record["reviewer_note"],
+        "files": files,
+        "urls": {
+            kind: f"/api/v1/files/{submission_id}/{kind}"
+            for kind, present in files.items() if present
+        },
     }
 
 
@@ -321,6 +329,7 @@ def _file_map(submission_id: str) -> dict[str, bool]:
 
 
 @api.get("/admin/files/{submission_id}/{kind}")
+@api.get("/api/v1/files/{submission_id}/{kind}")
 def file_bytes(submission_id: str, kind: str, _: str = Depends(require_reviewer)) -> FileResponse:
     if kind not in storage.KINDS:
         raise HTTPException(404, "Type de fichier inconnu.")
@@ -331,10 +340,12 @@ def file_bytes(submission_id: str, kind: str, _: str = Depends(require_reviewer)
 
 
 @api.post("/admin/submissions/{submission_id}/recrop", include_in_schema=False)
+@api.post("/api/v1/submissions/{submission_id}/recrop")
 def recrop(
+    request: Request,
     submission_id: str, zoom: float = Form(1.0), dx: float = Form(0.0), dy: float = Form(0.0),
     reviewer: str = Depends(require_reviewer),
-) -> RedirectResponse:
+) -> Any:
     """Re-run the photo crop from the original with the reviewer's manual adjustment."""
     record = database.get(settings.database_path, submission_id)
     if record is None:
@@ -352,14 +363,23 @@ def recrop(
         photo_report=json.dumps(result.as_report(), ensure_ascii=False),
         photo_score=result.score, reviewer=reviewer,
     )
+    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+        return {
+            "status": "ok",
+            "submission_id": submission_id,
+            "photo_score": result.score,
+            "photo_report": result.as_report(),
+        }
     return RedirectResponse(f"/admin/submissions/{submission_id}", status_code=303)
 
 
 @api.post("/admin/submissions/{submission_id}/rotate-signature", include_in_schema=False)
+@api.post("/api/v1/submissions/{submission_id}/rotate-signature")
 def rotate_signature(
+    request: Request,
     submission_id: str, rotation: int = Form(...),
     reviewer: str = Depends(require_reviewer),
-) -> RedirectResponse:
+) -> Any:
     """Rebuild the signature from its original with a reviewer-selected rotation."""
     record = database.get(settings.database_path, submission_id)
     if record is None:
@@ -385,6 +405,13 @@ def rotate_signature(
         reviewer=reviewer,
         error=record["photo_report"].get("error", "") or result.error,
     )
+    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
+        return {
+            "status": "ok",
+            "submission_id": submission_id,
+            "signature_score": result.score,
+            "signature_report": result.as_report(),
+        }
     return RedirectResponse(f"/admin/submissions/{submission_id}#signature-review", status_code=303)
 
 
