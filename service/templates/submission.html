@@ -58,6 +58,11 @@
     <span class="font-semibold">La dernière transmission a échoué.</span> {{ record.forward_status }}
   </div>
 {% endif %}
+{% if record.locked_since %}
+  <div class="mt-5 rounded-xl border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-950" role="status">
+    <span class="font-semibold">Opération en cours</span> ({{ {'transmission': 'transmission', 'recrop': 'recadrage', 'rotation': 'rotation de la signature'}.get(record.lock_operation, record.lock_operation) }}) depuis {{ record.locked_since[11:16] }} UTC. Actualisez la page dans quelques secondes.
+  </div>
+{% endif %}
 
 <section aria-labelledby="review-summary-title" class="mt-6 overflow-hidden rounded-xl border {{ 'border-rose-200 bg-rose-50/60' if record.error or missing_output else 'border-amber-200 bg-amber-50/60' if issue_count or unknown_count else 'border-emerald-200 bg-emerald-50/60' }}">
   <div class="grid lg:grid-cols-[minmax(0,1fr)_auto]">
@@ -143,7 +148,7 @@
 
         <div class="mt-6">{{ ui.checklist(photo) }}</div>
 
-        {% if record.status in ('pending', 'processing') and files['photo_original'] %}
+        {% if record.status == 'pending' and not record.locked_since and files['photo_original'] %}
           <details class="mt-5 rounded-lg border border-slate-200 bg-slate-50">
             <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-slate-800">Ajuster le recadrage</summary>
             <form method="post" action="/admin/submissions/{{ record.id }}/recrop" class="border-t border-slate-200 p-4">
@@ -217,7 +222,7 @@
 
         <div class="mt-6">{{ ui.checklist(signature) }}</div>
 
-        {% if record.status in ('pending', 'processing') and files['signature_original'] %}
+        {% if record.status == 'pending' and not record.locked_since and files['signature_original'] %}
           {% set current_rotation = signature_meta.get('orientation_degrees', 0) | int %}
           <details class="mt-5 rounded-lg border border-slate-200 bg-slate-50" {% if signature_meta.get('orientation_review') %}open{% endif %}>
             <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-slate-800">Corriger l'orientation</summary>
@@ -228,7 +233,7 @@
                 <div class="mt-4 grid gap-4 sm:grid-cols-2">
                   <div>
                     <label class="block text-xs font-medium text-slate-700" for="rotation">Angle (degrés)</label>
-                    <input id="rotation" name="rotation" type="number" step="1" value="{{ current_rotation }}" class="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
+                    <input id="rotation" name="rotation" type="number" step="1" min="-360" max="360" value="{{ current_rotation }}" class="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100">
                     <p class="mt-1 text-xs text-slate-500">Positif dans le sens horaire, négatif en antihoraire.</p>
                   </div>
                 </div>
@@ -267,20 +272,17 @@
         <p id="note-help" class="mt-1.5 text-xs leading-5 text-slate-500">Le motif est obligatoire pour un refus et conservé dans l'historique du dossier.</p>
 
         <div class="mt-5 space-y-2.5">
-          <button name="action" value="accept" {% if record.status == 'processing' or record.error or missing_output or not settings.outbound_enabled %}disabled{% endif %} class="w-full rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 active:translate-y-px disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
+          <button name="action" value="accept" {% if accept_blocker %}disabled{% endif %} class="w-full rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 active:translate-y-px disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
             Accepter et transmettre
           </button>
-          <button name="action" value="reject" formnovalidate {% if record.status == 'processing' %}disabled{% endif %} class="w-full rounded-lg border border-rose-300 bg-white px-4 py-2.5 text-sm font-semibold text-rose-800 hover:bg-rose-50 active:translate-y-px disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400">
+          <button name="action" value="reject" formnovalidate {% if record.status == 'processing' or record.locked_since %}disabled{% endif %} class="w-full rounded-lg border border-rose-300 bg-white px-4 py-2.5 text-sm font-semibold text-rose-800 hover:bg-rose-50 active:translate-y-px disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400">
             Refuser le dossier
           </button>
         </div>
 
-        {% if not settings.outbound_enabled %}
-          <p class="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">Transmission non configurée. L'acceptation est désactivée.</p>
-        {% elif record.status == 'processing' %}
-          <p class="mt-3 rounded-md bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900">Attendez la fin du traitement avant de décider.</p>
-        {% elif record.error or missing_output %}
-          <p class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-900">L'acceptation est désactivée tant que les deux sorties ne sont pas disponibles.</p>
+        {% if accept_blocker %}
+          {# The same rule the API applies: the button and /api/v1/validate never disagree. #}
+          <p class="mt-3 rounded-md {{ 'bg-sky-50 text-sky-900' if record.status == 'processing' or record.locked_since else 'bg-amber-50 text-amber-900' }} px-3 py-2 text-xs leading-5">Acceptation indisponible : {{ accept_blocker }}</p>
         {% else %}
           <p class="mt-3 text-xs leading-5 text-slate-500">Accepter transmet immédiatement la photo et la signature à Ephoto. Le dossier ne pourra plus être modifié.</p>
         {% endif %}
@@ -331,27 +333,36 @@
         </div>
       </dl>
     </section>
+
+    <section aria-labelledby="history-title" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 id="history-title" class="text-sm font-semibold text-slate-950">Historique</h2>
+      {% if history %}
+        <ol class="mt-4 space-y-3 border-l border-slate-200 pl-4 text-sm">
+          {% for event in history | reverse %}
+            <li class="relative">
+              <span aria-hidden="true" class="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full {{ 'bg-emerald-500' if event.action == 'accepted' else 'bg-rose-500' if event.action in ('rejected', 'processing_failed', 'transmission_failed') else 'bg-slate-400' }}"></span>
+              <p class="font-medium text-slate-900">{{ event_labels.get(event.action, event.action) }}</p>
+              <p class="text-xs text-slate-500">{{ event.at[:16].replace('T', ' ') }} UTC{% if event.actor %} · {{ event.actor }}{% endif %}</p>
+              {% set detail = event.detail %}
+              {% if detail.get('note') %}<p class="mt-1 rounded-md bg-slate-50 px-2 py-1 text-xs text-slate-700">{{ detail.note }}</p>{% endif %}
+              {% if detail.get('result') %}<p class="mt-1 text-xs text-slate-600">{{ detail.result }}</p>{% endif %}
+              {% if detail.get('error') %}<p class="mt-1 text-xs text-rose-700">{{ detail.error }}</p>{% endif %}
+              {% if event.action == 'processed' %}<p class="mt-1 text-xs text-slate-600">Photo {{ detail.get('photo_score', 0) }} %, signature {{ detail.get('signature_score', 0) }} % · {{ detail.get('seconds', '?') }} s</p>{% endif %}
+              {% if event.action == 'photo_recropped' %}<p class="mt-1 text-xs text-slate-600">zoom {{ detail.get('zoom') }}, dx {{ detail.get('dx') }}, dy {{ detail.get('dy') }} → {{ detail.get('score', 0) }} %</p>{% endif %}
+              {% if event.action == 'signature_rotated' %}<p class="mt-1 text-xs text-slate-600">{{ detail.get('rotation') }}° → {{ detail.get('score', 0) }} %</p>{% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="mt-3 text-xs text-slate-500">Aucun événement enregistré pour ce dossier.</p>
+      {% endif %}
+    </section>
   </aside>
 </div>
+{% endblock %}
 
+{% block scripts %}
 {% if record.status in ('pending', 'processing') %}
-<script>
-  (() => {
-    const form = document.querySelector('#decision-form');
-    const note = document.querySelector('#note');
-    if (!form || !note) return;
-
-    note.addEventListener('input', () => note.setCustomValidity(''));
-    form.addEventListener('submit', (event) => {
-      const action = event.submitter && event.submitter.value;
-      if (action === 'reject' && !note.value.trim()) {
-        event.preventDefault();
-        note.setCustomValidity('Indiquez le motif du refus.');
-        note.reportValidity();
-        note.focus();
-      }
-    });
-  })();
-</script>
+<script src="/admin/static/submission.js?v={{ asset_version }}" defer></script>
 {% endif %}
 {% endblock %}

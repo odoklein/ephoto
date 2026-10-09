@@ -13,7 +13,11 @@
     "output_density": 0.13587344028520498,
     "raw_components": 3,
     "output_components": 2,
-    "processing_mode": "adaptive"
+    "processing_mode": "adaptive",
+    "orientation_degrees": 0,
+    "orientation_confidence": 0.094,
+    "orientation_review": false,
+    "orientation_source": "automatic"
   },
   {
     "filename": "image (1) copie.jpg",
@@ -25,11 +29,15 @@
     "global_score": 100,
     "failures": "",
     "output_file": "output\\image (1) copie_ephoto.png",
-    "raw_density": 0.08693718302641185,
-    "output_density": 0.08882947118241236,
-    "raw_components": 2,
-    "output_components": 2,
-    "processing_mode": "otsu"
+    "raw_density": 0.19801107507715898,
+    "output_density": 0.1999114946343622,
+    "raw_components": 1,
+    "output_components": 1,
+    "processing_mode": "otsu",
+    "orientation_degrees": 0,
+    "orientation_confidence": 0.047,
+    "orientation_review": false,
+    "orientation_source": "automatic"
   },
   {
     "filename": "image (1).jpg",
@@ -41,11 +49,15 @@
     "global_score": 100,
     "failures": "",
     "output_file": "output\\image (1)_ephoto.png",
-    "raw_density": 0.07497145919048195,
-    "output_density": 0.11107367475292003,
+    "raw_density": 0.07494842176575887,
+    "output_density": 0.08890287477667695,
     "raw_components": 3,
-    "output_components": 1,
-    "processing_mode": "adaptive"
+    "output_components": 2,
+    "processing_mode": "adaptive+rotated_270_automatic",
+    "orientation_degrees": 270,
+    "orientation_confidence": 0.344,
+    "orientation_review": false,
+    "orientation_source": "automatic"
   },
   {
     "filename": "IMG_0645.jpeg",
@@ -57,11 +69,15 @@
     "global_score": 100,
     "failures": "",
     "output_file": "output\\IMG_0645_ephoto.png",
-    "raw_density": 0.06911860540892799,
-    "output_density": 0.08623376623376623,
+    "raw_density": 0.06902899967416097,
+    "output_density": 0.08619047619047619,
     "raw_components": 1,
     "output_components": 1,
-    "processing_mode": "adaptive"
+    "processing_mode": "adaptive",
+    "orientation_degrees": 0,
+    "orientation_confidence": 0.121,
+    "orientation_review": true,
+    "orientation_source": "automatic"
   },
   {
     "filename": "IMG_5856.jpeg",
@@ -73,11 +89,15 @@
     "global_score": 100,
     "failures": "",
     "output_file": "output\\IMG_5856_ephoto.png",
-    "raw_density": 0.10176360878832595,
-    "output_density": 0.11696969696969697,
+    "raw_density": 0.10201083169372029,
+    "output_density": 0.11728733114275283,
     "raw_components": 1,
     "output_components": 1,
-    "processing_mode": "adaptive"
+    "processing_mode": "adaptive",
+    "orientation_degrees": 0,
+    "orientation_confidence": 0.221,
+    "orientation_review": false,
+    "orientation_source": "automatic"
   },
   {
     "filename": "signature (1).jpg",
@@ -89,10 +109,14 @@
     "global_score": 100,
     "failures": "",
     "output_file": "output\\signature (1)_ephoto.png",
-    "raw_density": 0.1180531232318878,
+    "raw_density": 0.11795305048669995,
     "output_density": 0.13038419913419913,
     "raw_components": 1,
     "output_components": 1,
-    "processing_mode": "adaptive"
+    "processing_mode": "adaptive",
+    "orientation_degrees": 0,
+    "orientation_confidence": 0.662,
+    "orientation_review": false,
+    "orientation_source": "automatic"
   }
 ]

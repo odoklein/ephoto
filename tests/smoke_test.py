@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -73,6 +74,18 @@ def draw_signature(inverted: bool = False) -> bytes:
     return cv2.imencode(".png", canvas)[1].tobytes()
 
 
+def png_header(width: int, height: int) -> bytes:
+    """A tiny PNG whose header declares a huge canvas: a decompression bomb's calling card."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"")) + chunk(b"IEND", b"")
+
+
 class Hook(BaseHTTPRequestHandler):
     """Stands in for the Make.com webhook."""
 
@@ -94,6 +107,16 @@ def check(label: str, condition: bool, detail: str = "") -> None:
         failures.append(label)
 
 
+def wait_processed(client, submission_id: str, headers: dict, timeout: float = 180.0) -> dict:
+    """Processing runs on the background pool: poll like Make and WordPress do."""
+    deadline = time.monotonic() + timeout
+    while True:
+        state = client.get(f"/api/v1/submissions/{submission_id}", headers=headers).json()
+        if state.get("status") != "processing" or time.monotonic() > deadline:
+            return state
+        time.sleep(0.2)
+
+
 # ── Run ─────────────────────────────────────────────────────────────────────────────
 def main() -> int:
     server = HTTPServer(("127.0.0.1", 0), Hook)
@@ -102,6 +125,7 @@ def main() -> int:
     os.environ.update(
         STORAGE_DIR=str(STORE),
         INGEST_API_KEY="test-ingest-key",
+        REVIEW_API_KEY="test-review-key",
         ADMIN_USER="controleur",
         ADMIN_PASSWORD="secret-review",
         MAKE_WEBHOOK_URL=f"http://127.0.0.1:{server.server_port}/hook",
@@ -123,6 +147,7 @@ def main() -> int:
         ".png", cv2.rotate(inverted_array, cv2.ROTATE_90_CLOCKWISE)
     )[1].tobytes()
     api_key = {"X-API-Key": "test-ingest-key"}
+    review_key = {"X-API-Key": "test-review-key", "X-Reviewer-User": "wp-admin"}
     auth = ("controleur", "secret-review")
 
     with TestClient(app) as client:
@@ -130,11 +155,23 @@ def main() -> int:
         check("ingest sans clé refusé", client.post("/api/v1/ingest", json={}).status_code == 401)
         check("ingest mauvaise clé refusé",
               client.post("/api/v1/ingest", json={}, headers={"X-API-Key": "nope"}).status_code == 401)
+        check("clé non ASCII refusée sans erreur 500",
+              client.post("/api/v1/ingest", json={}, headers={"X-API-Key": "clé-é".encode()}).status_code == 401)
         check("dashboard sans auth refusé", client.get("/admin/dashboard").status_code == 401)
         check("dashboard mauvais mot de passe refusé",
               client.get("/admin/dashboard", auth=("controleur", "wrong")).status_code == 401)
         check("dossier de stockage non servi", client.get("/storage/ephoto.sqlite3").status_code == 404)
         check("code source non servi", client.get("/service/main.py").status_code == 404)
+
+        # The public tool serves an allowlist, not the repository
+        for path in ("/app.py", "/signature_validator.py", "/Dockerfile", "/requirements.txt", "/README.md",
+                     "/Photo-Evan-GREBAUT.jpg", "/IMG_1506.jpeg", "/photosanslunette.png", "/tests/smoke_test.py",
+                     "/make/B-accepted-service-to-ephoto.blueprint.json", "/wordpress-plugin/certif-ephoto-control.zip",
+                     "/.claude/settings.local.json", "/openapi.json", "/service/assets/tailwind.config.js"):
+            check(f"{path} non servi", client.get(path).status_code == 404, str(client.get(path).status_code))
+        check("rapport public servi", client.get("/reports/signature_report.json").status_code == 200)
+        check("exemple public servi", client.get("/input/IMG_0645.jpeg").status_code == 200)
+        check("styles du panneau servis", client.get("/admin/static/admin.css").status_code == 200)
 
         # The public signature tool keeps working under the new entry point
         root = client.get("/")
@@ -151,9 +188,21 @@ def main() -> int:
         check("ingest JSON accepté (202)", response.status_code == 202, response.text[:200])
         first = response.json()["submission_id"]
         check("review_url absolu", response.json()["review_url"].startswith("https://signature.example.fr/admin/"))
+        check("nouveau dossier non marqué doublon", response.json()["duplicate"] is False)
 
-        state = client.get(f"/api/v1/submissions/{first}", headers=api_key).json()
+        state = wait_processed(client, first, api_key)
         check("traitement terminé", state["status"] == "pending", json.dumps(state)[:300])
+        check("dossier prêt à accepter", state["accept_ready"] is True, json.dumps(state)[:300])
+
+        retry = client.post("/api/v1/ingest", headers=api_key, json={
+            "order_id": "WC-10245",
+            "customer": {"first_name": "Camille", "last_name": "Roux", "email": "camille@example.fr"},
+            "photo": "data:image/png;base64," + base64.b64encode(photo_bytes).decode(),
+            "signature": {"filename": "sig.png", "base64": base64.b64encode(signature_bytes).decode()},
+        })
+        check("renvoi identique dédoublonné",
+              retry.status_code == 200 and retry.json()["submission_id"] == first and retry.json()["duplicate"] is True,
+              retry.text[:200])
         detector = client.get("/api/health").json()["face_detector"]
         if detector == "none":
             # OpenCV 5 dropped the cascades and MediaPipe is absent: geometry cannot be
@@ -204,6 +253,41 @@ def main() -> int:
                   response.status_code == 200 and response.headers["content-type"] == expected and len(response.content) > 500,
                   f"{response.status_code} {response.headers.get('content-type')}")
         check("fichiers protégés", client.get(f"/admin/files/{first}/photo_clean").status_code == 401)
+        check("historique affiché", "Historique" in detail.text and "Dossier reçu" in detail.text
+              and "Traitement automatique terminé" in detail.text)
+
+        # Hardening headers on everything that touches identity data
+        board_headers = client.get("/admin/dashboard", auth=auth).headers
+        check("CSP sur le panneau", "script-src 'self'" in board_headers.get("content-security-policy", ""))
+        check("panneau non encadrable", board_headers.get("x-frame-options") == "DENY")
+        check("panneau jamais mis en cache", "no-store" in board_headers.get("cache-control", ""))
+        image_headers = client.get(f"/admin/files/{first}/photo_clean", auth=auth).headers
+        check("image d'identité jamais mise en cache", "no-store" in image_headers.get("cache-control", ""))
+        check("nosniff partout", client.get("/").headers.get("x-content-type-options") == "nosniff")
+        check("aucun script tiers dans le panneau", "cdn.tailwindcss.com" not in detail.text and "<script>" not in detail.text)
+
+        # Key scoping: header only, and the intake key grants no review rights
+        check("clé en paramètre d'URL refusée",
+              client.get(f"/api/v1/submissions/{first}?key=test-ingest-key").status_code == 401)
+        check("clé d'intake sans droit de contrôle",
+              client.get(f"/api/v1/files/{first}/photo_clean", headers=api_key).status_code == 401)
+        check("clé de contrôle : lecture des fichiers",
+              client.get(f"/api/v1/files/{first}/photo_clean", headers=review_key).status_code == 200)
+        check("clé de contrôle : lecture du statut",
+              client.get(f"/api/v1/submissions/{first}", headers=review_key).status_code == 200)
+        check("identifiant mal formé → 404", client.get("/admin/submissions/..%2f..", auth=auth).status_code == 404)
+
+        # Cross-site form posts are refused even with valid Basic credentials
+        forged = client.post(f"/admin/submissions/{first}/decision", auth=auth, follow_redirects=False,
+                             data={"action": "accept"}, headers={"Origin": "https://evil.example"})
+        check("CSRF : origine étrangère refusée", forged.status_code == 403, str(forged.status_code))
+        check("CSRF : rien n'a été transmis", len(received) == 0)
+        check("recadrage hors bornes refusé",
+              client.post(f"/api/v1/submissions/{first}/recrop", headers=review_key,
+                          data={"zoom": "1", "dx": "3", "dy": "0"}).status_code == 422)
+        check("recadrage NaN refusé",
+              client.post(f"/api/v1/submissions/{first}/recrop", headers=review_key,
+                          data={"zoom": "nan", "dx": "0", "dy": "0"}).status_code == 422)
 
         # Manual re-crop
         before = client.get(f"/api/v1/submissions/{first}", headers=api_key).json()["photo"]["metadata"]
@@ -233,6 +317,12 @@ def main() -> int:
               client.get(f"/api/v1/submissions/{first}", headers=api_key).json()["status"] == "accepted")
         check("double décision refusée",
               client.post(f"/api/v1/validate/{first}", json={"action": "accept"}, auth=auth).status_code == 409)
+        check("recadrage d'un dossier transmis refusé",
+              client.post(f"/admin/submissions/{first}/recrop", auth=auth,
+                          data={"zoom": "1.1", "dx": "0", "dy": "0"}).status_code == 409)
+        check("page d'erreur lisible pour le contrôleur",
+              "Dossier déjà traité" in client.post(f"/admin/submissions/{first}/decision", auth=auth,
+                                                     data={"action": "accept"}, headers={"Accept": "text/html"}).text)
 
         # Multipart intake, inverted signature, rejection
         response = client.post(
@@ -243,7 +333,7 @@ def main() -> int:
         )
         check("ingest multipart accepté", response.status_code == 202, response.text[:200])
         second = response.json()["submission_id"]
-        state = client.get(f"/api/v1/submissions/{second}", headers=api_key).json()
+        state = wait_processed(client, second, api_key)
         check("signature inversée détectée", state["signature"]["metadata"].get("inverted") is True,
               json.dumps(state["signature"].get("metadata"))[:200])
         check("signature inversée conforme", state["signature"]["compliant"] is True)
@@ -269,8 +359,11 @@ def main() -> int:
         )
         check("motif obligatoire pour un refus", missing_reason.status_code == 422)
 
-        rejected = client.post(f"/api/v1/validate/{second}", json={"action": "reject", "reason": "photo floue"}, auth=auth)
+        rejected = client.post(f"/api/v1/validate/{second}", auth=auth,
+                               json={"action": "reject", "reason": "photo floue", "reviewer": "mallory"})
         check("refus enregistré", rejected.status_code == 200 and rejected.json()["status"] == "rejected")
+        check("le contrôleur ne peut pas signer au nom d'un autre",
+              "mallory" not in client.get(f"/admin/submissions/{second}", auth=auth).text)
         check("aucun envoi après refus", len(received) == 1)
         check("vue des refusés", second in client.get("/admin/dashboard?show=rejected", auth=auth).text)
 
@@ -305,6 +398,57 @@ def main() -> int:
               client.post("/api/v1/ingest", json={"photo": "%%%", "signature": "%%%"},
                           headers=api_key).status_code in (422, 500))
         check("dossier inconnu → 404", client.get("/api/v1/submissions/deadbeef", headers=api_key).status_code == 404)
+
+        # Robustness: odd customer data, state-aware decisions, restart recovery
+        odd = client.post("/api/v1/ingest", headers=api_key, json={
+            "order_id": "WC-ODD", "customer": "juste une chaîne",
+            "photo": base64.b64encode(photo_bytes).decode(),
+            "signature": base64.b64encode(inverted_signature).decode(),
+        })
+        check("client non structuré accepté", odd.status_code == 202, odd.text[:200])
+        check("dashboard intact malgré un client non structuré",
+              client.get("/admin/dashboard", auth=auth).status_code == 200)
+
+        from service import database, storage, workflow
+        from service.config import settings
+
+        ghost = "0123456789abcdef"
+        database.create(settings.database_path, ghost, "WC-GHOST", {})
+        refused = client.post(f"/api/v1/validate/{ghost}", json={"action": "accept"}, headers=review_key)
+        check("acceptation refusée pendant le traitement",
+              refused.status_code == 409 and "Traitement en cours" in refused.text, refused.text[:200])
+        check("aucun envoi pendant le traitement", len(received) == 1)
+        storage.write(settings.storage_dir, ghost, "photo_original", photo_bytes, ".png")
+        storage.write(settings.storage_dir, ghost, "signature_original", signature_bytes, ".png")
+        client.post(f"/api/v1/validate/{ghost}", json={"action": "reject", "reason": "doublon"}, headers=review_key)
+        workflow.process(ghost)
+        check("un refus pendant le traitement n'est pas annulé",
+              database.get(settings.database_path, ghost)["status"] == "rejected")
+        check("décision API attribuée au contrôleur délégué",
+              database.get(settings.database_path, ghost)["reviewer"] == "wp-admin (API)")
+
+        revived = "fedcba9876543210"
+        database.create(settings.database_path, revived, "WC-REVIVED", {})
+        storage.write(settings.storage_dir, revived, "photo_original", photo_bytes, ".png")
+        storage.write(settings.storage_dir, revived, "signature_original", signature_bytes, ".png")
+        workflow.recover()
+        state = wait_processed(client, revived, api_key)
+        check("traitement relancé au redémarrage", state["status"] == "pending", json.dumps(state)[:200])
+
+        # Hostile input: internal URLs and decompression bombs never reach the pipelines
+        internal = client.post("/api/v1/ingest", headers=api_key, json={
+            "photo": {"url": f"http://127.0.0.1:{server.server_port}/photo.jpg"},
+            "signature": base64.b64encode(signature_bytes).decode(),
+        })
+        check("URL interne refusée (SSRF)",
+              internal.status_code == 422 and "non publique" in internal.text, internal.text[:200])
+        bomb = client.post("/api/v1/ingest", headers=api_key, json={
+            "photo": base64.b64encode(png_header(30_000, 30_000)).decode(),
+            "signature": base64.b64encode(signature_bytes).decode(),
+        })
+        check("bombe de décompression refusée", bomb.status_code == 413, bomb.text[:200])
+        health = client.get("/api/health").json()
+        check("santé publique sans chiffres métier", "counts" not in health, json.dumps(health))
 
     server.shutdown()
     print(f"\néchecs : {failures or 'aucun'}")

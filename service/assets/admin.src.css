@@ -1,0 +1,6 @@
+/* Source of service/static/admin.css — rebuild after changing any template class:
+ *   npx tailwindcss@3.4.17 -c service/assets/tailwind.config.js -i service/assets/admin.src.css -o service/static/admin.css --minify
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

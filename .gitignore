@@ -6,3 +6,7 @@ storage/
 output_photos/
 # Portraits de test : données personnelles, elles ne partent jamais sur GitHub.
 samples/
+# Documents nominatifs et scénarios Make (adresse e-mail personnelle en dur) : hors dépôt.
+Guide_*.pdf
+guide_*.html
+make/

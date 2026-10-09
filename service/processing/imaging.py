@@ -1,8 +1,12 @@
 """Decoding and encoding helpers shared by the photo and signature processors."""
 from __future__ import annotations
 
+import io
+import warnings
+
 import cv2
 import numpy as np
+from PIL import Image
 
 JPEG = ".jpg", "image/jpeg"
 PNG = ".png", "image/png"
@@ -33,12 +37,56 @@ def sniff_extension(data: bytes, fallback: str = ".jpg") -> str:
     return fallback
 
 
+class ImageRejected(ValueError):
+    """Bytes that are not an image the pipelines may decode."""
+
+    def __init__(self, message: str, too_large: bool = False) -> None:
+        super().__init__(message)
+        self.too_large = too_large
+
+
+def inspect(data: bytes, max_pixels: int) -> tuple[int, int]:
+    """Width and height read from the header, before a single pixel is allocated.
+
+    Fifteen megabytes of JPEG or PNG can declare a 50 000 × 50 000 canvas; decoding it
+    would take the container down with every dossier in it.  Pillow parses only the
+    header here, so a decompression bomb is refused for the price of a few bytes.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                width, height = image.size
+    except Image.DecompressionBombError as error:
+        raise ImageRejected("Image trop grande (nombre de pixels)", too_large=True) from error
+    except Exception as error:  # UnidentifiedImageError, truncated header, …
+        raise ImageRejected("Image illisible ou format non supporté") from error
+    if width <= 0 or height <= 0:
+        raise ImageRejected("Image vide")
+    if width * height > max_pixels:
+        raise ImageRejected(
+            f"Image trop grande : {width}×{height} px (maximum {max_pixels // 1_000_000} Mpx)", too_large=True,
+        )
+    return width, height
+
+
 def decode(data: bytes) -> np.ndarray:
     """Bytes to BGR. Raises ValueError rather than returning None like OpenCV does."""
     image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Image illisible ou format non supporté")
     return image
+
+
+def limit_size(image: np.ndarray, max_side: int) -> tuple[np.ndarray, float]:
+    """Downscale so the longer side is at most `max_side`; returns the image and the factor."""
+    height, width = image.shape[:2]
+    longest = max(height, width)
+    if longest <= max_side:
+        return image, 1.0
+    factor = max_side / float(longest)
+    resized = cv2.resize(image, (round(width * factor), round(height * factor)), interpolation=cv2.INTER_AREA)
+    return resized, factor
 
 
 def encode_png(image: np.ndarray) -> bytes:

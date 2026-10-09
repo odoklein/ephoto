@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the pinned stack (same sequence as the Dockerfile)
+        run: |
+          pip install -r requirements.txt -c constraints.txt
+          pip install --force-reinstall --no-deps -c constraints.txt opencv-python-headless
+      - name: Unit tests
+        run: python tests/unit_test.py
+      - name: End-to-end smoke test
+        env:
+          REQUIRE_FACE_MESH: "true"
+        run: python tests/smoke_test.py
+      - name: Panel CSS is up to date with the templates
+        run: |
+          npx --yes tailwindcss@3.4.17 -c service/assets/tailwind.config.js -i service/assets/admin.src.css -o /tmp/admin.css --minify
+          diff -q /tmp/admin.css service/static/admin.css
+      - name: PHP syntax of the WordPress plugin
+        run: find wordpress-plugin -name '*.php' -print0 | xargs -0 -n1 php -l
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The build itself asserts that OpenCV 4, NumPy 1 and MediaPipe load together.
+      - run: docker build -t ephoto:ci .

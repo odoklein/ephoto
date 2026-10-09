@@ -93,6 +93,11 @@ EDGE_SHARPNESS, EDGE_FEATHER = 6.0, 1.2
 # Share of the face box the cut must keep: below this the segmentation ate the subject,
 # and the original photograph is preferable to a mutilated one.
 SUBJECT_INTACT_MIN = 0.90
+# Longest side the pipeline works at.  The export is at most 828 × 1064, and the head
+# fills three quarters of it, so 4096 px still feeds the double-size export from any
+# normally framed portrait — while a 48 Mpx upload no longer means a gigabyte of float
+# intermediates per worker.
+WORKING_MAX_SIDE = 4096
 
 # MediaPipe Face Mesh indices (468-point topology).
 CHIN, FOREHEAD = 152, 10
@@ -231,16 +236,21 @@ def _ear_visibility(
     if ref_x0 < 0 or ref_x1 > width or ref_y0 < 0 or ref_y1 > height or ref_x1 - ref_x0 < 8 or ref_y1 - ref_y0 < 8:
         return UNKNOWN, {}
 
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
-    reference = np.median(lab[ref_y0:ref_y1, ref_x0:ref_x1].reshape(-1, 3), axis=0)
     y0, y1 = int(eye_y + 0.05 * face_height), int(chin_y - 0.12 * face_height)
     left_bounds = (int(left_side[0] - 0.10 * face_width), int(left_side[0] + 0.06 * face_width))
     right_bounds = (int(right_side[0] - 0.06 * face_width), int(right_side[0] + 0.10 * face_width))
     if y0 < 0 or y1 > height or y1 - y0 < 8 or left_bounds[0] < 0 or right_bounds[1] > width:
         return UNKNOWN, {}
 
+    # Only the band holding the cheeks and both ear areas is converted: a float Lab copy
+    # of a whole phone photograph costs hundreds of megabytes for a few thousand samples.
+    ox0, ox1 = min(ref_x0, left_bounds[0]), max(ref_x1, right_bounds[1])
+    oy0, oy1 = min(ref_y0, y0), max(ref_y1, y1)
+    lab = cv2.cvtColor(image[oy0:oy1, ox0:ox1], cv2.COLOR_BGR2LAB).astype(np.float32)
+    reference = np.median(lab[ref_y0 - oy0:ref_y1 - oy0, ref_x0 - ox0:ref_x1 - ox0].reshape(-1, 3), axis=0)
+
     def coverage(bounds: tuple[int, int]) -> float:
-        region = lab[y0:y1, bounds[0]:bounds[1]]
+        region = lab[y0 - oy0:y1 - oy0, bounds[0] - ox0:bounds[1] - ox0]
         if region.size == 0:
             return 0.0
         distance = np.linalg.norm(region - reference, axis=2)
@@ -832,6 +842,8 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         source = imaging.decode(data)
     except ValueError as error:
         return ProcessedImage(b"", "image/jpeg", ".jpg", 0, 0, error=str(error))
+    source_size = [source.shape[1], source.shape[0]]
+    source, working_scale = imaging.limit_size(source, WORKING_MAX_SIDE)
 
     geometry = detect_face(source)
     corrected, exposure_normalized = normalise_exposure(source)
@@ -899,8 +911,10 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         "face_spread": round(exposure.spread, 1),
         "sharpness": round(sharpness, 1),
         "jpeg_quality": quality,
-        "crop_box": [round(value) for value in box],
-        "source_size": [source.shape[1], source.shape[0]],
+        # In the coordinates of the file the customer sent, whatever size we worked at.
+        "crop_box": [round(value / working_scale) for value in box],
+        "source_size": source_size,
+        "working_scale": round(working_scale, 4),
         "override": {"zoom": override.zoom, "dx": override.dx, "dy": override.dy} if override.active else None,
         **(geometry.measures if geometry else {}),
     }

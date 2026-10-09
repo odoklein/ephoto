@@ -1,7 +1,24 @@
 .git
 .gitignore
+.github
+.claude
 __pycache__
 *.py[cod]
 .venv
 venv
 *.log
+storage/
+samples/
+output_photos/
+tests/
+make/
+wordpress-plugin/
+service/assets/
+# Portraits and documents kept at the repository root for local testing are personal
+# data: they never enter the image.  (These patterns match the root only; the public
+# demo samples in input/ and output/ stay.)
+*.jpg
+*.jpeg
+*.png
+*.pdf
+guide_*.html

@@ -45,63 +45,135 @@ WooCommerce → Webhook Make → POST /api/v1/ingest → traitement OpenCV → f
 
 ```
 Ephoto/
-├─ signature_validator.py      # pipeline signature en production — inchangé
-├─ app.py                      # page publique de contrôle signature — inchangée
+├─ signature_validator.py      # pipeline signature (nettoyage, orientation, rapport)
+├─ app.py                      # page publique de contrôle signature (liste blanche de fichiers)
 ├─ index.html
 ├─ service/                    # le microservice
-│  ├─ main.py                  # FastAPI : ingest, dashboard, validate
+│  ├─ main.py                  # assemblage : middlewares, routes, cycle de vie
+│  ├─ api.py                   # routes machine : ingest, statut, validate, fichiers, santé
+│  ├─ admin.py                 # panneau de contrôle (HTML) et actions du contrôleur
+│  ├─ workflow.py              # les règles : réception, traitement, décision, rétention
+│  ├─ jobs.py                  # pool borné qui exécute les traitements d'images
+│  ├─ web.py                   # en-têtes de sécurité, anti-CSRF, taille max, journal
 │  ├─ config.py                # variables d'environnement (secrets « fail closed »)
-│  ├─ database.py              # SQLite : une ligne par dossier
-│  ├─ storage.py               # images sur disque (original + traité)
-│  ├─ security.py              # clé d'API (Make) + HTTP Basic (contrôleur)
-│  ├─ outbound.py              # webhook sortant + téléchargement des sources
+│  ├─ database.py              # SQLite : dossiers, migrations, historique d'audit
+│  ├─ storage.py               # images sur disque (écriture atomique)
+│  ├─ security.py              # clés d'API, HTTP Basic, limiteur d'échecs
+│  ├─ outbound.py              # webhook sortant + téléchargements protégés (SSRF)
 │  ├─ models.py                # Check / ProcessedImage, calcul du score
-│  ├─ processing/
-│  │  ├─ photo_processor.py    # cadrage et contrôles ANTS/ICAO
-│  │  ├─ signature_processor.py# adaptateur vers signature_validator.py
-│  │  └─ imaging.py            # décodage, encodage, netteté
-│  └─ templates/               # Jinja2 + Tailwind (dashboard, fiche dossier)
+│  ├─ processing/              # photo ANTS, adaptateur signature, décodage
+│  ├─ templates/               # Jinja2 (dashboard, fiche dossier, erreurs)
+│  ├─ static/                  # CSS compilé + JS du panneau (servis sous /admin/static)
+│  └─ assets/                  # sources Tailwind (non servies)
 ├─ tests/smoke_test.py         # test bout en bout, sans réseau ni données réelles
+├─ tests/unit_test.py          # migrations, verrous, SSRF, orientation sur les exemples
+├─ wordpress-plugin/           # extension WooCommerce de contrôle (voir son README)
 └─ storage/                    # dossiers en attente (hors dépôt, purgé automatiquement)
 ```
+
+### Cycle de vie d'un dossier
+
+```
+processing ──(traitement)──► pending ──accepter──► accepted ──(rétention)──► purgé
+    │                          └─────refuser───► rejected ──(rétention)──► purgé
+    └────────(échec)─────────► error ──────────────────────(rétention)──► purgé
+```
+
+- Les originaux sont écrits sur disque **avant** la réponse 202 ; le traitement tourne
+  ensuite sur un pool borné (`PROCESSING_WORKERS`). Un dossier encore `processing` au
+  redémarrage est relancé automatiquement.
+- Chaque changement d'état est une mise à jour conditionnelle : deux acceptations
+  simultanées (panneau + WordPress) ne transmettent jamais deux fois, et un refus reçu
+  pendant le traitement n'est plus annulé à la fin de celui-ci.
+- Un verrou par dossier empêche un recadrage pendant une transmission. S'il reste posé
+  après un crash, le démarrage le libère et le signale sur la fiche.
+- Un renvoi des **mêmes fichiers pour la même commande** (relance Make, double chemin
+  d'entrée) renvoie le dossier existant (`200`, `duplicate: true`) au lieu d'en créer un.
+- Chaque étape est inscrite dans l'**historique** du dossier (fiche, colonne de droite).
 
 ### Points d'entrée
 
 | Méthode | Route | Auth | Rôle |
 |---|---|---|---|
-| POST | `/api/v1/ingest` | `X-API-Key` | Réception Make : JSON (base64 ou URL) **ou** multipart |
-| GET | `/api/v1/submissions/{id}` | `X-API-Key` | Statut et rapports, pour un scénario Make en attente |
-| POST | `/api/v1/validate/{id}` | Basic | Décision `{"action": "accept" \| "reject", "reason": "…"}` |
+| POST | `/api/v1/ingest` | clé d'intake | Réception : JSON (base64 ou URL) **ou** multipart. `202` nouveau, `200` doublon |
+| GET | `/api/v1/submissions/{id}` | clé d'intake ou de contrôle | Statut, rapports, `error`, `accept_ready` |
+| POST | `/api/v1/validate/{id}` | Basic ou clé de contrôle | Décision `{"action": "accept" \| "reject", "reason": "…"}` |
+| GET | `/api/v1/files/{id}/{kind}` | Basic ou clé de contrôle | Images (original / préparée) |
+| POST | `/api/v1/submissions/{id}/recrop` | Basic ou clé de contrôle | `zoom` 0,5–2 ; `dx`, `dy` −0,5–0,5 (fractions du cadre) |
+| POST | `/api/v1/submissions/{id}/rotate-signature` | Basic ou clé de contrôle | `rotation` en degrés, sens horaire |
 | GET | `/admin/dashboard` | Basic | Liste des dossiers, scores, filtres |
 | GET/POST | `/admin/nouveau` | Basic | Création manuelle d'un dossier (test ou comptoir) |
-| GET | `/admin/submissions/{id}` | Basic | Avant/après, métadonnées, checklist, décision |
-| POST | `/admin/submissions/{id}/recrop` | Basic | Recadrage manuel (zoom + décalages) |
-| POST | `/admin/submissions/{id}/rotate-signature` | Basic | Correction manuelle de l'orientation de la signature |
-| GET | `/api/health` | — | État du service et détecteur de visage actif |
+| GET | `/admin/submissions/{id}` | Basic | Avant/après, checklist, historique, décision |
+| GET | `/api/health` | — | `ok` / `degraded` (sans MediaPipe) / `error` (503, base illisible) |
+
+**Clés.** Elles passent **uniquement** dans l'en-tête `X-API-Key` (plus jamais dans l'URL,
+où elles finissaient dans les journaux et le navigateur). La clé d'intake
+(`INGEST_API_KEY`, celle de Make) ne permet que de déposer et lire un dossier ; la clé de
+contrôle (`REVIEW_API_KEY`, celle du plugin WordPress) permet d'agir comme contrôleur,
+avec le nom de l'utilisateur dans `X-Reviewer-User`. Un champ `reviewer` dans le corps
+est ignoré : la décision est attribuée à l'identité authentifiée.
+
+**Acceptation.** Refusée (`409`) tant que le dossier n'est pas `pending`, sans erreur,
+avec photo et signature préparées, et sans opération en cours — la même règle que le
+bouton du panneau. `502` si Make refuse : le dossier reste dans la file. Le webhook
+sortant porte `Idempotency-Key: <submission_id>` pour que Make puisse ignorer un renvoi.
 
 La page publique de contrôle de signature reste montée à la racine et garde exactement
 son comportement actuel.
 
 ### Orientation de la signature
 
-Le service détecte les signatures verticales ou retournées et applique automatiquement
-une rotation à angle droit avant le nettoyage et l'export. La rotation, sa confiance et
-son origine sont conservées dans les métadonnées du rapport. Une détection ambiguë est
-affichée comme indéterminée au contrôleur, qui peut choisir 0°, 90°, 180° ou 270°
-depuis la fiche du dossier. Le recalcul repart toujours de l'original et ne l'écrase pas.
+Seule une signature **verticale** (feuille photographiée de côté) est tournée
+automatiquement, de 90° ou 270°. Le service ne redresse plus automatiquement les angles
+libres — l'inclinaison fait partie de la signature, et le redressement par ACP tournait
+des signatures droites de 225° ou les retournait — et ne retourne jamais seul une
+signature horizontale de 180° : si l'heuristique le suggère, la signature est gardée
+telle quelle et marquée « à confirmer ». Le contrôleur peut appliquer n'importe quel
+angle depuis la fiche ; le recalcul repart toujours de l'original.
 
 ### Variables d'environnement
 
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `INGEST_API_KEY` | — | **Obligatoire** : sans elle `/api/v1/ingest` répond 503 |
+| `REVIEW_API_KEY` | — | Clé du plugin WordPress pour les actions de contrôle ; sans elle, seul le Basic fonctionne |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | — | **Obligatoires** : sans eux le panneau répond 503 |
-| `MAKE_WEBHOOK_URL` | — | Webhook de sortie ; sans lui l'acceptation échoue en 502 |
-| `MAKE_WEBHOOK_TOKEN` | — | Envoyé en `Authorization: Bearer …` |
+| `MAKE_WEBHOOK_URL` | — | Webhook de sortie (HTTPS) ; sans lui l'acceptation est indisponible |
+| `MAKE_WEBHOOK_TOKEN` | — | Envoyé en `Authorization: Bearer …` — à vérifier dans le scénario B |
 | `STORAGE_DIR` | `/data` (Docker) | Images et base SQLite |
 | `PURGE_AFTER_DAYS` | `30` | Purge des dossiers décidés (RGPD) |
+| `PURGE_OPEN_AFTER_DAYS` | `0` (jamais) | Purge des dossiers jamais décidés |
 | `FLATTEN_BACKGROUND` | `auto` | `always`, `auto` ou `never` pour le détourage du fond |
-| `PUBLIC_BASE_URL` | — | Préfixe du lien de contrôle renvoyé à Make |
+| `PUBLIC_BASE_URL` | — | Préfixe du lien de contrôle ; sert aussi au contrôle d'origine (CSRF) |
+| `PROCESSING_WORKERS` | `2` | Images traitées en parallèle (≈ 300 Mo chacune au pire) |
+| `FETCH_ALLOWED_HOSTS` | — | Domaines autorisés pour les URL d'images (ex. `boutique.fr`) ; recommandé |
+| `MAX_UPLOAD_BYTES` / `MAX_IMAGE_PIXELS` | 15 Mo / 60 Mpx | Refus avant décodage (bombes de décompression) |
+| `REQUIRE_FACE_MESH` | `true` (Docker) | `/api/health` passe à `degraded` sans MediaPipe |
+| `LOG_LEVEL` | `INFO` | Journal sur stdout, sans chaîne de requête ni donnée client |
+
+### Sécurité
+
+- La page publique ne sert plus que `index.html`, `input/`, `output/` et `reports/`.
+  Auparavant **tout le dépôt** était téléchargeable (code, Dockerfile, portraits de test).
+- Panneau : CSP stricte (aucun script tiers ni en ligne), `X-Frame-Options: DENY`,
+  `Cache-Control: no-store` sur le panneau et les images, contrôle d'origine sur tout
+  POST (les identifiants Basic sont rejoués par le navigateur sur un formulaire forgé).
+- Téléchargements d'images : HTTP(S) uniquement, adresses privées/locales refusées à
+  chaque redirection, taille et type vérifiés.
+- 10 échecs d'authentification en 5 minutes bloquent l'adresse (429).
+
+### Exploitation
+
+- **Un seul worker uvicorn** : le pool de traitement et le limiteur vivent en mémoire.
+- **Dépendances verrouillées** : `constraints.txt` fixe chaque version. Après modification
+  de `requirements.txt`, régénérez-le pour linux/CPython 3.12 :
+  `pip install --dry-run --ignore-installed --report r.json --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --python-version 3.12 --only-binary=:all: --target t -r requirements.txt`
+  puis reportez les versions de `r.json`. Le build Docker échoue si OpenCV 4, NumPy 1 et
+  MediaPipe ne se chargent pas ensemble.
+- **Styles du panneau** : après un changement de classes dans les gabarits,
+  `npx tailwindcss@3.4.17 -c service/assets/tailwind.config.js -i service/assets/admin.src.css -o service/static/admin.css --minify`
+  (la CI vérifie que le fichier est à jour).
+- Les migrations de la base s'appliquent seules au démarrage (`PRAGMA user_version`).
 
 ### Contrôles de la photo
 
@@ -140,7 +212,8 @@ présenté comme conforme. `/api/health` indique le détecteur réellement actif
 ### Lancer et tester en local
 
 ```bash
-py -m pip install -r requirements.txt
+py -m pip install -r requirements.txt -c constraints.txt
+py tests/unit_test.py
 py tests/smoke_test.py
 ```
 
@@ -178,9 +251,10 @@ aux dossiers publics `input/`, `output/` ou `reports/`.
 3. Indiquez `./docker-compose.yml` comme chemin Compose.
 4. Dans l’onglet **Domains**, ajoutez votre domaine et sélectionnez le port interne
    `8000`.
-5. Dans l’onglet **Environment**, renseignez au minimum `INGEST_API_KEY`, `ADMIN_USER`,
-   `ADMIN_PASSWORD`, `MAKE_WEBHOOK_URL` et `PUBLIC_BASE_URL` (voir le tableau plus
-   haut). Sans ces variables, l’ingestion et le panneau de contrôle répondent 503.
+5. Dans l’onglet **Environment**, renseignez au minimum `INGEST_API_KEY`,
+   `REVIEW_API_KEY` (si le plugin WordPress est utilisé), `ADMIN_USER`, `ADMIN_PASSWORD`,
+   `MAKE_WEBHOOK_URL` et `PUBLIC_BASE_URL` (voir le tableau plus haut). Sans ces
+   variables, l’ingestion et le panneau de contrôle répondent 503.
 6. Cliquez sur Deploy. Les pushes futurs sur la branche choisie peuvent déclencher le
    redéploiement automatique.
 

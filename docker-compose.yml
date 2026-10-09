@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 40s
     expose:
       - "8000"
     volumes:
@@ -13,13 +14,19 @@ services:
       - STORAGE_DIR=/data
       # Secrets: define them in Dokploy (Environment), never in this file.
       - INGEST_API_KEY=${INGEST_API_KEY}
+      - REVIEW_API_KEY=${REVIEW_API_KEY:-}
       - ADMIN_USER=${ADMIN_USER}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - MAKE_WEBHOOK_URL=${MAKE_WEBHOOK_URL}
       - MAKE_WEBHOOK_TOKEN=${MAKE_WEBHOOK_TOKEN:-}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       - PURGE_AFTER_DAYS=${PURGE_AFTER_DAYS:-30}
+      - PURGE_OPEN_AFTER_DAYS=${PURGE_OPEN_AFTER_DAYS:-0}
       - FLATTEN_BACKGROUND=${FLATTEN_BACKGROUND:-auto}
+      - PROCESSING_WORKERS=${PROCESSING_WORKERS:-2}
+      - FETCH_ALLOWED_HOSTS=${FETCH_ALLOWED_HOSTS:-}
+      - REQUIRE_FACE_MESH=${REQUIRE_FACE_MESH:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
 volumes:
   submissions:

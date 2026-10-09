@@ -1,442 +1,93 @@
-"""FastAPI entry point: Make.com intake, human review panel, outbound validation.
+"""Application assembly: middleware, routers, lifecycle, then the public tool at the root.
+
+    service/
+      api.py        Make + WordPress JSON routes, health
+      admin.py      review panel (HTML) and the reviewer's actions
+      workflow.py   the rules: intake, processing, decision, retention
+      jobs.py       bounded pool running the image pipelines
+      database.py   SQLite rows, migrations, audit trail
+      storage.py    images on disk
+      security.py   keys, Basic auth, brute-force limiter
+      web.py        headers, CSRF origin check, body cap, access log, error pages
 
 Route order matters here.  The public signature tool (`app.py`) is mounted last, at the
-root, exactly as it is deployed today; every route declared before the mount takes
-precedence over it, which is also how the storage folder is kept out of its static
-handler.
+root; every route declared before the mount takes precedence over it.
 """
 from __future__ import annotations
 
-import base64
-import binascii
-import json
-import re
-import secrets
+import asyncio
+import contextlib
+import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
+from fastapi.staticfiles import StaticFiles
 
-from app import app as legacy_app  # the untouched public signature tool
+from app import app as public_app  # the public signature tool
 
-from . import database, outbound, storage
-from .config import ROOT, settings
-from .processing import imaging, photo_processor, signature_processor
-from .processing.photo_processor import CropOverride
-from .security import require_ingest_key, require_reviewer
+from . import __version__, database, workflow
+from .admin import CONTEXT, STATIC_DIR, router as admin_router, templates
+from .api import router as api_router
+from .config import settings
+from .jobs import jobs
+from .processing import photo_processor
+from .web import HardeningMiddleware, configure_logging, install_error_pages
 
-templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
-DATA_URL = re.compile(r"^data:(?P<type>[\w./+-]+);base64,(?P<payload>.+)$", re.DOTALL)
+configure_logging(settings.log_level)
+log = logging.getLogger("ephoto")
+HOUSEKEEPING_SECONDS = 3600
+# Two uploads at the size limit, base64-inflated, plus form overhead.
+MAX_REQUEST_BYTES = max(64 * 1024 * 1024, 3 * settings.max_upload_bytes)
+
+
+async def _housekeeping() -> None:
+    """Retention runs hourly, not on dashboard loads: deleting is not a page view's job."""
+    while True:
+        await asyncio.sleep(HOUSEKEEPING_SECONDS)
+        try:
+            await run_in_threadpool(workflow.purge)
+        except Exception:  # noqa: BLE001 - the loop must survive a bad hour
+            log.exception("housekeeping failed")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    for warning in settings.warnings:
+        log.warning("configuration: %s", warning)
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
-    database.init(settings.database_path)
-    purge_expired()
-    yield
+    started_at = database.init(settings.database_path)
+    if started_at != database.SCHEMA_VERSION:
+        log.info("database migrated from schema %s to %s", started_at, database.SCHEMA_VERSION)
+    detector = photo_processor.available_detector()
+    if detector != "mediapipe":
+        log.log(logging.ERROR if settings.require_face_mesh else logging.WARNING,
+                "face detector is %r, not mediapipe: landmark checks will be undecided", detector)
+    jobs.start(settings.processing_workers)
+    workflow.recover()
+    await run_in_threadpool(workflow.purge)
+    housekeeping = asyncio.create_task(_housekeeping())
+    log.info("service %s ready (detector %s, %d worker(s))", __version__, detector, settings.processing_workers)
+    try:
+        yield
+    finally:
+        housekeeping.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await housekeeping
+        await run_in_threadpool(jobs.shutdown)
 
 
 api = FastAPI(
-    title="CERTIF ID — préparation ANTS", version="1.0", docs_url=None, redoc_url=None,
-    lifespan=lifespan,
+    title="CERTIF ID — préparation ANTS", version=__version__, docs_url=None, redoc_url=None,
+    openapi_url=None, lifespan=lifespan,
 )
-
-
-# ── Housekeeping ────────────────────────────────────────────────────────────────────
-def purge_expired() -> int:
-    """Drop decided submissions past the retention window, images included."""
-    removed = 0
-    for submission_id in database.expired(settings.database_path, settings.purge_after_days):
-        storage.purge(settings.storage_dir, submission_id)
-        database.delete(settings.database_path, submission_id)
-        removed += 1
-    return removed
-
-
-@api.get("/api/health")
-def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "ingest_configured": settings.ingest_enabled,
-        "admin_configured": settings.admin_enabled,
-        "outbound_configured": settings.outbound_enabled,
-        "face_detector": photo_processor.available_detector(),
-        "counts": database.counts(settings.database_path),
-    }
-
-
-# ── Intake ──────────────────────────────────────────────────────────────────────────
-def _decode_source(spec: Any, field: str) -> tuple[bytes, str]:
-    """Accept the shapes Make.com actually sends: data URL, raw base64, URL, or dict."""
-    if isinstance(spec, dict):
-        filename = str(spec.get("filename") or f"{field}.jpg")
-        if spec.get("base64"):
-            return _from_base64(str(spec["base64"]), field), filename
-        if spec.get("url"):
-            return outbound.fetch(str(spec["url"]), settings.max_upload_bytes), filename
-        raise HTTPException(422, f"Champ « {field} » sans base64 ni url.")
-    if isinstance(spec, str) and spec.strip():
-        value = spec.strip()
-        if value.lower().startswith(("http://", "https://")):
-            return outbound.fetch(value, settings.max_upload_bytes), f"{field}.jpg"
-        return _from_base64(value, field), f"{field}.jpg"
-    raise HTTPException(422, f"Champ « {field} » manquant.")
-
-
-def _from_base64(value: str, field: str) -> bytes:
-    match = DATA_URL.match(value)
-    payload = match.group("payload") if match else value
-    try:
-        data = base64.b64decode(payload, validate=False)
-    except (binascii.Error, ValueError) as error:
-        raise HTTPException(422, f"Champ « {field} » : base64 invalide ({error}).") from error
-    if not data:
-        raise HTTPException(422, f"Champ « {field} » vide.")
-    if len(data) > settings.max_upload_bytes:
-        raise HTTPException(413, f"Champ « {field} » trop volumineux.")
-    return data
-
-
-def _process(submission_id: str, photo: tuple[bytes, str], signature: tuple[bytes, str]) -> None:
-    """Run both pipelines and file the result. Executed off the event loop."""
-    path = settings.database_path
-    try:
-        photo_data, photo_name = photo
-        signature_data, signature_name = signature
-        storage.write(settings.storage_dir, submission_id, "photo_original", photo_data,
-                      imaging.sniff_extension(photo_data, Path(photo_name).suffix.lower() or ".jpg"))
-        storage.write(settings.storage_dir, submission_id, "signature_original", signature_data,
-                      imaging.sniff_extension(signature_data, Path(signature_name).suffix.lower() or ".png"))
-
-        photo_result = photo_processor.process(photo_data, flatten=settings.flatten_background)
-        if photo_result.data:
-            storage.write(settings.storage_dir, submission_id, "photo_clean", photo_result.data, photo_result.extension)
-        signature_result = signature_processor.process(signature_data, signature_name)
-        if signature_result.data:
-            storage.write(settings.storage_dir, submission_id, "signature_clean", signature_result.data, signature_result.extension)
-
-        database.update(
-            path, submission_id,
-            status=database.PENDING,
-            photo_report=json.dumps(photo_result.as_report(), ensure_ascii=False),
-            signature_report=json.dumps(signature_result.as_report(), ensure_ascii=False),
-            photo_score=photo_result.score, signature_score=signature_result.score,
-            error=photo_result.error or signature_result.error,
-        )
-    except Exception as error:  # a broken upload must not leave the row in limbo
-        database.update(path, submission_id, status=database.ERROR, error=f"{type(error).__name__}: {error}")
-
-
-@api.post("/api/v1/ingest", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_ingest_key)])
-async def ingest(
-    background: BackgroundTasks,
-    request: Request,
-    photo: UploadFile | None = File(default=None),
-    signature: UploadFile | None = File(default=None),
-    order_id: str = Form(default=""),
-    customer: str = Form(default=""),
-) -> JSONResponse:
-    """Receive one customer file from Make and queue it for review.
-
-    Both transports are supported because Make sends whichever is easiest to wire:
-    JSON with base64/URL fields, or a multipart form with the two files attached.
-    """
-    if photo is not None and signature is not None:
-        photo_source = (await photo.read(settings.max_upload_bytes + 1), photo.filename or "photo.jpg")
-        signature_source = (await signature.read(settings.max_upload_bytes + 1), signature.filename or "signature.png")
-        for data, _ in (photo_source, signature_source):
-            if len(data) > settings.max_upload_bytes:
-                raise HTTPException(413, "Fichier trop volumineux.")
-        try:
-            customer_data = json.loads(customer) if customer else {}
-        except json.JSONDecodeError:
-            customer_data = {"raw": customer}
-        reference = order_id
-    else:
-        try:
-            payload = await request.json()
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            raise HTTPException(415, "Envoyez un JSON ou un formulaire multipart avec photo + signature.") from error
-        if not isinstance(payload, dict):
-            raise HTTPException(422, "Le corps JSON doit être un objet.")
-        photo_source = _decode_source(payload.get("photo"), "photo")
-        signature_source = _decode_source(payload.get("signature"), "signature")
-        customer_data = payload.get("customer") or {}
-        reference = str(payload.get("order_id") or payload.get("source_ref") or "")
-
-    submission_id = secrets.token_hex(8)
-    database.create(settings.database_path, submission_id, reference, customer_data)
-    background.add_task(_process, submission_id, photo_source, signature_source)
-    return JSONResponse(
-        {
-            "submission_id": submission_id,
-            "status": database.PROCESSING,
-            "review_url": f"{settings.public_base_url}/admin/submissions/{submission_id}",
-        },
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-
-
-@api.get("/api/v1/submissions/{submission_id}", dependencies=[Depends(require_ingest_key)])
-def submission_status(submission_id: str) -> dict:
-    """Polling endpoint for Make and WordPress: status and both conformity reports."""
-    record = database.get(settings.database_path, submission_id)
-    if record is None:
-        raise HTTPException(404, "Dossier inconnu.")
-    files = _file_map(submission_id)
-    return {
-        "submission_id": record["id"],
-        "status": record["status"],
-        "photo": record["photo_report"],
-        "signature": record["signature_report"],
-        "photo_score": record["photo_score"],
-        "signature_score": record["signature_score"],
-        "forward_status": record["forward_status"],
-        "reviewer_note": record["reviewer_note"],
-        "files": files,
-        "urls": {
-            kind: f"/api/v1/files/{submission_id}/{kind}"
-            for kind, present in files.items() if present
-        },
-    }
-
-
-# ── Decision ────────────────────────────────────────────────────────────────────────
-def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
-    """Accept (and transmit) or reject a submission; returns the updated record."""
-    record = database.get(settings.database_path, submission_id)
-    if record is None:
-        raise HTTPException(404, "Dossier inconnu.")
-    if record["status"] not in database.OPEN_STATUSES:
-        raise HTTPException(409, f"Dossier déjà traité ({record['status']}).")
-    if action not in ("accept", "reject"):
-        raise HTTPException(422, "Action inconnue : accept ou reject.")
-    note = note.strip()
-    if action == "reject" and not note:
-        raise HTTPException(422, "Le motif du refus est obligatoire.")
-
-    if action == "reject":
-        database.update(
-            settings.database_path, submission_id, status=database.REJECTED,
-            reviewer=reviewer, reviewer_note=note, decided_at=database.now(),
-        )
-        return database.get(settings.database_path, submission_id)
-
-    record["decided_at"] = database.now()
-    delivered, report = outbound.send(outbound.build_payload(record, reviewer))
-    if not delivered:
-        # Never archive a file that was not transmitted: it stays in the queue with the
-        # reason visible, so the reviewer can retry once Make is reachable again.
-        database.update(settings.database_path, submission_id, forward_status=report, reviewer=reviewer)
-        raise HTTPException(502, f"Transmission impossible : {report}")
-    database.update(
-        settings.database_path, submission_id, status=database.ACCEPTED, reviewer=reviewer,
-        reviewer_note=note, decided_at=record["decided_at"], forward_status=report,
-    )
-    return database.get(settings.database_path, submission_id)
-
-
-@api.post("/api/v1/validate/{submission_id}")
-def validate(submission_id: str, payload: dict = Body(default={}), reviewer: str = Depends(require_reviewer)) -> dict:
-    """Controller action, API form: {"action": "accept" | "reject", "reason": "..."}."""
-    record = decide(
-        submission_id,
-        str(payload.get("action", "")).lower(),
-        str(payload.get("reviewer") or reviewer),
-        str(payload.get("reason") or payload.get("note") or ""),
-    )
-    return {
-        "submission_id": record["id"], "status": record["status"],
-        "forward_status": record["forward_status"], "decided_at": record["decided_at"],
-    }
-
-
-# ── Review panel ────────────────────────────────────────────────────────────────────
-@api.get("/admin", include_in_schema=False)
-def admin_root(_: str = Depends(require_reviewer)) -> RedirectResponse:
-    return RedirectResponse("/admin/dashboard", status_code=302)
-
-
-@api.get("/admin/dashboard", response_class=HTMLResponse)
-def dashboard(
-    request: Request, show: str = "open", q: str = "", reviewer: str = Depends(require_reviewer)
-) -> Response:
-    purge_expired()
-    statuses = {
-        "open": database.OPEN_STATUSES,
-        "accepted": (database.ACCEPTED,),
-        "rejected": (database.REJECTED, database.ERROR),
-    }.get(show, database.OPEN_STATUSES)
-    return templates.TemplateResponse(
-        request, "dashboard.html",
-        {
-            "records": database.listing(settings.database_path, statuses, query=q),
-            "counts": database.counts(settings.database_path),
-            "show": show, "q": q, "reviewer": reviewer, "settings": settings,
-        },
-    )
-
-
-@api.get("/admin/nouveau", response_class=HTMLResponse)
-def manual_form(request: Request, reviewer: str = Depends(require_reviewer)) -> Response:
-    return templates.TemplateResponse(request, "new.html", {"reviewer": reviewer, "settings": settings})
-
-
-@api.post("/admin/nouveau", include_in_schema=False)
-def manual_create(
-    photo: UploadFile = File(...), signature: UploadFile = File(...),
-    order_id: str = Form(default=""), name: str = Form(default=""), email: str = Form(default=""),
-    reviewer: str = Depends(require_reviewer),
-) -> RedirectResponse:
-    """Create a submission by hand, for testing and for counter staff.
-
-    Unlike the Make intake this runs the pipelines inline — the reviewer is waiting on
-    the page, so landing on a half-processed file would only confuse them.
-    """
-    sources = []
-    for upload, fallback in ((photo, "photo.jpg"), (signature, "signature.png")):
-        data = upload.file.read(settings.max_upload_bytes + 1)
-        if not data:
-            raise HTTPException(422, f"Fichier « {upload.filename or fallback} » vide.")
-        if len(data) > settings.max_upload_bytes:
-            raise HTTPException(413, f"Fichier « {upload.filename or fallback} » trop volumineux.")
-        sources.append((data, upload.filename or fallback))
-
-    submission_id = secrets.token_hex(8)
-    customer = {key: value for key, value in (("name", name), ("email", email)) if value}
-    database.create(settings.database_path, submission_id, order_id, customer)
-    _process(submission_id, sources[0], sources[1])
-    return RedirectResponse(f"/admin/submissions/{submission_id}", status_code=303)
-
-
-@api.get("/admin/submissions/{submission_id}", response_class=HTMLResponse)
-def submission_detail(request: Request, submission_id: str, reviewer: str = Depends(require_reviewer)) -> Response:
-    record = database.get(settings.database_path, submission_id)
-    if record is None:
-        raise HTTPException(404, "Dossier inconnu.")
-    return templates.TemplateResponse(
-        request, "submission.html",
-        {"record": record, "reviewer": reviewer, "files": _file_map(submission_id), "settings": settings},
-    )
-
-
-def _file_map(submission_id: str) -> dict[str, bool]:
-    return {kind: storage.find(settings.storage_dir, submission_id, kind) is not None for kind in storage.KINDS}
-
-
-@api.get("/admin/files/{submission_id}/{kind}")
-@api.get("/api/v1/files/{submission_id}/{kind}")
-def file_bytes(submission_id: str, kind: str, _: str = Depends(require_reviewer)) -> FileResponse:
-    if kind not in storage.KINDS:
-        raise HTTPException(404, "Type de fichier inconnu.")
-    path = storage.find(settings.storage_dir, submission_id, kind)
-    if path is None:
-        raise HTTPException(404, "Fichier absent.")
-    return FileResponse(path, media_type=storage.media_type(path))
-
-
-@api.post("/admin/submissions/{submission_id}/recrop", include_in_schema=False)
-@api.post("/api/v1/submissions/{submission_id}/recrop")
-def recrop(
-    request: Request,
-    submission_id: str, zoom: float = Form(1.0), dx: float = Form(0.0), dy: float = Form(0.0),
-    reviewer: str = Depends(require_reviewer),
-) -> Any:
-    """Re-run the photo crop from the original with the reviewer's manual adjustment."""
-    record = database.get(settings.database_path, submission_id)
-    if record is None:
-        raise HTTPException(404, "Dossier inconnu.")
-    source = storage.find(settings.storage_dir, submission_id, "photo_original")
-    if source is None:
-        raise HTTPException(404, "Photo d'origine absente.")
-    result = photo_processor.process(
-        source.read_bytes(), CropOverride(zoom=zoom, dx=dx, dy=dy), flatten=settings.flatten_background
-    )
-    if result.data:
-        storage.write(settings.storage_dir, submission_id, "photo_clean", result.data, result.extension)
-    database.update(
-        settings.database_path, submission_id,
-        photo_report=json.dumps(result.as_report(), ensure_ascii=False),
-        photo_score=result.score, reviewer=reviewer,
-    )
-    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
-        return {
-            "status": "ok",
-            "submission_id": submission_id,
-            "photo_score": result.score,
-            "photo_report": result.as_report(),
-        }
-    return RedirectResponse(f"/admin/submissions/{submission_id}", status_code=303)
-
-
-@api.post("/admin/submissions/{submission_id}/rotate-signature", include_in_schema=False)
-@api.post("/api/v1/submissions/{submission_id}/rotate-signature")
-def rotate_signature(
-    request: Request,
-    submission_id: str, rotation: int = Form(...),
-    reviewer: str = Depends(require_reviewer),
-) -> Any:
-    """Rebuild the signature from its original with a reviewer-selected rotation."""
-    record = database.get(settings.database_path, submission_id)
-    if record is None:
-        raise HTTPException(404, "Dossier inconnu.")
-    if record["status"] not in database.OPEN_STATUSES:
-        raise HTTPException(409, f"Dossier déjà traité ({record['status']}).")
-    source = storage.find(settings.storage_dir, submission_id, "signature_original")
-    if source is None:
-        raise HTTPException(404, "Signature d'origine absente.")
-
-    result = signature_processor.process(
-        source.read_bytes(), source.name, rotation_degrees=rotation,
-    )
-    if not result.data or result.error:
-        raise HTTPException(422, f"Rotation impossible : {result.error or 'sortie vide'}")
-    storage.write(
-        settings.storage_dir, submission_id, "signature_clean", result.data, result.extension,
-    )
-    database.update(
-        settings.database_path, submission_id,
-        signature_report=json.dumps(result.as_report(), ensure_ascii=False),
-        signature_score=result.score,
-        reviewer=reviewer,
-        error=record["photo_report"].get("error", "") or result.error,
-    )
-    if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
-        return {
-            "status": "ok",
-            "submission_id": submission_id,
-            "signature_score": result.score,
-            "signature_report": result.as_report(),
-        }
-    return RedirectResponse(f"/admin/submissions/{submission_id}#signature-review", status_code=303)
-
-
-@api.post("/admin/submissions/{submission_id}/decision", include_in_schema=False)
-def decision_form(
-    submission_id: str, action: str = Form(...), note: str = Form(default=""),
-    reviewer: str = Depends(require_reviewer),
-) -> RedirectResponse:
-    decide(submission_id, action, reviewer, note)
-    return RedirectResponse("/admin/dashboard", status_code=303)
-
-
-# ── Guards, then the untouched public tool ──────────────────────────────────────────
-@api.get("/storage/{rest:path}", include_in_schema=False)
-@api.get("/service/{rest:path}", include_in_schema=False)
-def blocked(rest: str) -> Response:
-    """The legacy static handler serves the repository root; these paths must not leak.
-
-    `storage/` holds identity photographs and the database, `service/` the source code,
-    so both are answered here — before the mount below ever sees the request.
-    """
-    raise HTTPException(404, "Not found")
-
-
-# Declared last so every route above wins: the public page keeps its exact behaviour.
-api.mount("/", legacy_app)
+api.add_middleware(HardeningMiddleware, public_base_url=settings.public_base_url, max_body_bytes=MAX_REQUEST_BYTES)
+install_error_pages(api, templates, CONTEXT)
+api.include_router(api_router)
+api.include_router(admin_router)
+api.mount("/admin/static", StaticFiles(directory=STATIC_DIR), name="admin-static")
+# Declared last so every route above wins.  The public tool serves an explicit list of
+# files and folders (see app.py), never the repository itself.
+api.mount("/", public_app)
 
 app = api

@@ -1,7 +1,7 @@
-filename,background_clean,dimensions_ok,format_ok,weight_ok,stroke_quality,global_score,failures,output_file,raw_density,output_density,raw_components,output_components,processing_mode
-Black-Minimalist-Signature-Typography-Studio-Logo.png,pass,pass,pass,pass,pass,100,,output\Black-Minimalist-Signature-Typography-Studio-Logo_ephoto.png,0.12240737067160395,0.13587344028520498,3,2,adaptive
-image (1) copie.jpg,pass,pass,pass,pass,pass,100,,output\image (1) copie_ephoto.png,0.08693718302641185,0.08882947118241236,2,2,otsu
-image (1).jpg,pass,pass,pass,pass,pass,100,,output\image (1)_ephoto.png,0.07497145919048195,0.11107367475292003,3,1,adaptive
-IMG_0645.jpeg,pass,pass,pass,pass,pass,100,,output\IMG_0645_ephoto.png,0.06911860540892799,0.08623376623376623,1,1,adaptive
-IMG_5856.jpeg,pass,pass,pass,pass,pass,100,,output\IMG_5856_ephoto.png,0.10176360878832595,0.11696969696969697,1,1,adaptive
-signature (1).jpg,pass,pass,pass,pass,pass,100,,output\signature (1)_ephoto.png,0.1180531232318878,0.13038419913419913,1,1,adaptive
+filename,background_clean,dimensions_ok,format_ok,weight_ok,stroke_quality,global_score,failures,output_file,raw_density,output_density,raw_components,output_components,processing_mode,orientation_degrees,orientation_confidence,orientation_review,orientation_source
+Black-Minimalist-Signature-Typography-Studio-Logo.png,pass,pass,pass,pass,pass,100,,output\Black-Minimalist-Signature-Typography-Studio-Logo_ephoto.png,0.12240737067160395,0.13587344028520498,3,2,adaptive,0,0.094,False,automatic
+image (1) copie.jpg,pass,pass,pass,pass,pass,100,,output\image (1) copie_ephoto.png,0.19801107507715898,0.1999114946343622,1,1,otsu,0,0.047,False,automatic
+image (1).jpg,pass,pass,pass,pass,pass,100,,output\image (1)_ephoto.png,0.07494842176575887,0.08890287477667695,3,2,adaptive+rotated_270_automatic,270,0.344,False,automatic
+IMG_0645.jpeg,pass,pass,pass,pass,pass,100,,output\IMG_0645_ephoto.png,0.06902899967416097,0.08619047619047619,1,1,adaptive,0,0.121,True,automatic
+IMG_5856.jpeg,pass,pass,pass,pass,pass,100,,output\IMG_5856_ephoto.png,0.10201083169372029,0.11728733114275283,1,1,adaptive,0,0.221,False,automatic
+signature (1).jpg,pass,pass,pass,pass,pass,100,,output\signature (1)_ephoto.png,0.11795305048669995,0.13038419913419913,1,1,adaptive,0,0.662,False,automatic
