@@ -173,6 +173,19 @@ def main() -> int:
         check(f"orientation de l'exemple {name}", row is not None and row.orientation_degrees in expected
               and not row.failures, json.dumps(row.__dict__ if row else {}, default=str)[:200])
 
+    # Background tint: a beige or cream wall has the luminance of the regulation grey, so a
+    # luminance-only check let it through at 100 % (order #3559, refused by hand for « Fond »).
+    from service.processing import photo_processor
+
+    def wall(hex_rgb: str) -> np.ndarray:
+        rgb = tuple(int(hex_rgb[i:i + 2], 16) for i in (1, 3, 5))
+        return np.full((532, 414, 3), rgb[::-1], dtype=np.uint8)
+
+    for hex_rgb, expected in (("#d4d7d3", True), ("#d9d9d6", True), ("#d8cdb4", False),
+                              ("#e6dcc0", False), ("#bcd4ec", False), ("#ffffff", False)):
+        stats = photo_processor.background_stats(wall(hex_rgb))
+        check(f"fond {hex_rgb} {'accepté' if expected else 'refusé'}", stats.ok is expected, stats.detail)
+
     print(f"\néchecs : {failures or 'aucun'}")
     return 1 if failures else 0
 

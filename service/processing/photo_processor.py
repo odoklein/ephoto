@@ -19,6 +19,7 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -64,6 +65,11 @@ MOUTH_GAP_MAX = 0.15  # inner lip gap over mouth width
 # Calibrated on the sample photographs: a studio grey with a soft vignette measures ~23,
 # a textured wall or a bedsheet 30 to 58. Revisit both figures as the sample grows.
 BACKGROUND_STD_MAX, BACKGROUND_MIN_LEVEL = 25.0, 130.0
+# The product background is a light grey, so the wall must be close to neutral. Chroma is
+# read in Lab (distance of the median a/b from grey, 0 = neutral): the locked #d4d7d3 sits
+# at about 2, a warm-lit grey studio at 4 to 6, while a beige wall (#d8cdb4) reads 12, a
+# cream one 15 and a pale blue 13. Luminance alone cannot tell them apart.
+BACKGROUND_CHROMA_MAX = 8.0
 # "Le fond doit être uni, de couleur claire (bleu clair ou gris clair par exemple). Le
 # fond blanc est interdit." — service-public.fr F10619. A background brighter than this
 # reads as that forbidden white, so it is refused at the top of the band as well as at
@@ -570,8 +576,33 @@ def normalise_exposure(image: np.ndarray) -> tuple[np.ndarray, bool]:
     return cv2.cvtColor(cv2.merge((adjusted, a, b)), cv2.COLOR_LAB2BGR), True
 
 
-def background_stats(image: np.ndarray, alpha: np.ndarray | None = None) -> tuple[float, float]:
-    """Mean level and dispersion of the background.
+class BackgroundStats(NamedTuple):
+    """What the background looks like: level, dispersion and tint (Lab chroma)."""
+
+    mean: float
+    deviation: float
+    chroma: float
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.deviation <= BACKGROUND_STD_MAX
+            and BACKGROUND_MIN_LEVEL <= self.mean <= BACKGROUND_MAX_LEVEL
+            and self.chroma <= BACKGROUND_CHROMA_MAX
+        )
+
+    @property
+    def detail(self) -> str:
+        return f"niveau {self.mean:.0f}, écart-type {self.deviation:.1f}, teinte {self.chroma:.0f}"
+
+
+def _chroma(lab: np.ndarray) -> float:
+    """Distance of the median a/b of these Lab pixels (N×3, OpenCV 8-bit) from neutral grey."""
+    return float(math.hypot(np.median(lab[:, 1]) - 128.0, np.median(lab[:, 2]) - 128.0))
+
+
+def background_stats(image: np.ndarray, alpha: np.ndarray | None = None) -> BackgroundStats:
+    """Level, dispersion and tint of the background.
 
     Given the cut-out alpha, the statistic is read exactly where the subject is not, which
     is the only reliable way to do it: every geometric approximation eventually measures
@@ -585,18 +616,23 @@ def background_stats(image: np.ndarray, alpha: np.ndarray | None = None) -> tupl
     clothing as background.
     """
     grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     height, width = grey.shape[:2]
     if alpha is not None:
         scaled = cv2.resize(alpha, (width, height), interpolation=cv2.INTER_LINEAR)
-        samples = grey[scaled < 0.1]
+        selected = scaled < 0.1
+        samples = grey[selected]
         if samples.size >= 64:
-            return float(samples.mean()), float(samples.std())
+            return BackgroundStats(float(samples.mean()), float(samples.std()), _chroma(lab[selected]))
     band = max(2, width // 12)
     shoulder_line = max(2, int(0.60 * height))
     samples = np.concatenate([
         grey[:shoulder_line, :band].ravel(), grey[:shoulder_line, -band:].ravel(),
     ])
-    return float(samples.mean()), float(samples.std())
+    tint = np.concatenate([
+        lab[:shoulder_line, :band].reshape(-1, 3), lab[:shoulder_line, -band:].reshape(-1, 3),
+    ])
+    return BackgroundStats(float(samples.mean()), float(samples.std()), _chroma(tint))
 
 
 @dataclass
@@ -776,7 +812,7 @@ def _band(value: float, low: float, high: float) -> str:
 
 def build_checks(
     geometry: FaceGeometry | None, export: np.ndarray, data: bytes,
-    padding: float, background: tuple[float, float], sharpness: float,
+    padding: float, background: BackgroundStats, sharpness: float,
     head_ratio: float, eye_level: float, exposure: ExposureStats, ears_visible: str,
 ) -> list[Check]:
     height, width = export.shape[:2]
@@ -784,7 +820,6 @@ def build_checks(
         width >= OUT_WIDTH and height >= OUT_HEIGHT
         and abs((width / height) / PHOTO_RATIO - 1) <= RATIO_TOLERANCE
     )
-    mean, deviation = background
     checks = [
         Check("face_detected", "Visage détecté", PASS if geometry else FAIL,
               "" if geometry else "aucun visage exploitable"),
@@ -810,10 +845,8 @@ def build_checks(
         Check("framing_ok", "Cadrage complet dans la photo source",
               PASS if padding <= PADDING_LIMIT else FAIL,
               f"{padding:.1%} de marge ajoutée" if padding else ""),
-        Check("background_ok", "Fond uni et clair, non blanc",
-              PASS if deviation <= BACKGROUND_STD_MAX
-              and BACKGROUND_MIN_LEVEL <= mean <= BACKGROUND_MAX_LEVEL else FAIL,
-              f"niveau {mean:.0f}, écart-type {deviation:.1f}"),
+        Check("background_ok", "Fond uni, gris clair, non blanc",
+              PASS if background.ok else FAIL, background.detail),
         Check("exposure_ok", "Luminosité et contraste corrects",
               PASS if exposure.ok else FAIL, exposure.detail),
         Check("sharpness_ok", "Netteté suffisante", PASS if sharpness >= SHARPNESS_MIN else FAIL,
@@ -857,13 +890,11 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
 
     replaced, cut_alpha = False, None
     if flatten != "never":
-        mean, deviation = background_stats(crop)
         # "always" is the deployed setting: ANTS wants a plain light background with no
         # shadow behind the sitter, and a photograph taken at home never has one. "auto"
-        # remains for tuning, and only intervenes when the original is out of spec.
-        if flatten == "always" or deviation > BACKGROUND_STD_MAX or not (
-            BACKGROUND_MIN_LEVEL <= mean <= BACKGROUND_MAX_LEVEL
-        ):
+        # remains for tuning, and only intervenes when the original is out of spec — which
+        # includes a tinted wall (beige, cream, pale blue), not just a dark or busy one.
+        if flatten == "always" or not background_stats(crop).ok:
             candidate, alpha = flatten_background(crop, face_in_crop)
             # flatten_background() hands back the very same array when it could not cut
             # the subject out safely; shipping a mutilated photograph would be worse than
