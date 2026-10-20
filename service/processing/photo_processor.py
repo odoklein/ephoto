@@ -27,10 +27,10 @@ import numpy as np
 if __package__ in (None, ""):  # allows `python service/processing/photo_processor.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from service.models import FAIL, PASS, UNKNOWN, Check, ProcessedImage
-    from service.processing import imaging
+    from service.processing import background, imaging
 else:
     from ..models import FAIL, PASS, UNKNOWN, Check, ProcessedImage
-    from . import imaging
+    from . import background, imaging
 
 # ── Conformity constants ────────────────────────────────────────────────────────────
 OUT_WIDTH, OUT_HEIGHT = 414, 532  # ANTS minimum, i.e. 35 × 45 mm at ~300 dpi
@@ -90,12 +90,9 @@ PADDING_LIMIT = 0.02
 # The replacement background is a product constant, not an inferred colour.  Keep the
 # hexadecimal value here as the source of truth and derive the OpenCV BGR tuple from it.
 # This prevents different processing paths from drifting to slightly different greys.
-UNIFORM_BACKGROUND_HEX = "#d4d7d3"
-UNIFORM_BACKGROUND_RGB = (0xD4, 0xD7, 0xD3)
+UNIFORM_BACKGROUND_HEX = background.TARGET_HEX
+UNIFORM_BACKGROUND_RGB = background.TARGET_RGB
 UNIFORM_BACKGROUND = tuple(reversed(UNIFORM_BACKGROUND_RGB))  # OpenCV stores BGR.
-# The segmentation alpha is soft over several pixels. Steepening it and then feathering it
-# back by roughly a pixel gives a cut edge that neither haloes nor looks scissored.
-EDGE_SHARPNESS, EDGE_FEATHER = 6.0, 1.2
 # Share of the face box the cut must keep: below this the segmentation ate the subject,
 # and the original photograph is preferable to a mutilated one.
 SUBJECT_INTACT_MIN = 0.90
@@ -577,11 +574,36 @@ def normalise_exposure(image: np.ndarray) -> tuple[np.ndarray, bool]:
 
 
 class BackgroundStats(NamedTuple):
-    """What the background looks like: level, dispersion and tint (Lab chroma)."""
+    """What the background looks like: level, dispersion and tint (Lab chroma).
+
+    `ok` says whether a wall is a plausible ANTS background at all.  The delivered photo
+    is held to a stricter rule, `matches_target`: the background must *be* the client's
+    colour — mean and 95th-percentile ΔE against it — with no old wall left at the edges.
+    """
 
     mean: float
     deviation: float
     chroma: float
+    delta_e: float = float("nan")
+    delta_e_p95: float = float("nan")
+    residual: float = 0.0
+    decision: str = ""
+
+    @property
+    def matches_target(self) -> bool:
+        return (
+            not math.isnan(self.delta_e)
+            and self.delta_e <= background.DELTA_E_MEAN_MAX
+            and self.delta_e_p95 <= background.DELTA_E_P95_MAX
+            and self.residual <= background.RESIDUAL_WALL_MAX
+        )
+
+    @property
+    def target_detail(self) -> str:
+        if math.isnan(self.delta_e):
+            return f"fond non mesurable ({DECISIONS.get(self.decision, self.decision)})"
+        return (f"ΔE moyen {self.delta_e:.1f}, p95 {self.delta_e_p95:.1f}, résidus {self.residual:.1%}"
+                f" — {DECISIONS.get(self.decision, self.decision)}")
 
     @property
     def ok(self) -> bool:
@@ -718,12 +740,20 @@ def person_mask(image: np.ndarray) -> np.ndarray | None:
     if segmenter is None:
         return None
     height, width = image.shape[:2]
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     with _segmenter_lock:
-        result = segmenter.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    mask = getattr(result, "segmentation_mask", None)
-    if mask is None:
-        return None
-    alpha = cv2.resize(np.asarray(mask, np.float32), (width, height), interpolation=cv2.INTER_LINEAR)
+        mask = getattr(segmenter.process(rgb), "segmentation_mask", None)
+        if mask is None:
+            return None
+        # Copied before the next call: MediaPipe reuses the buffer behind the result.
+        mask = np.array(mask, np.float32, copy=True)
+        # Test-time augmentation: the mirror image goes through the network too and the
+        # two masks are averaged.  A 256-pixel model is unsure along the outline in ways
+        # that are not symmetric, and the average removes much of that wobble.
+        mirrored = getattr(segmenter.process(np.ascontiguousarray(rgb[:, ::-1])), "segmentation_mask", None)
+        if mirrored is not None:
+            mask = 0.5 * (mask + np.array(mirrored, np.float32)[:, ::-1])
+    alpha = cv2.resize(mask, (width, height), interpolation=cv2.INTER_LINEAR)
     # On an ANTS crop the sitter fills most of the frame; anything outside this band is a
     # cut that failed rather than an unusual portrait.
     if not 0.15 <= float((alpha > 0.5).mean()) <= 0.95:
@@ -742,33 +772,87 @@ def _subject_intact(alpha: np.ndarray, face_box: tuple[int, int, int, int]) -> b
     return float(alpha[y0:y1, x0:x1].mean()) >= SUBJECT_INTACT_MIN
 
 
-def flatten_background(
-    image: np.ndarray, face_box: tuple[int, int, int, int] | None,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """Cut the subject out and set it on the regulation background.
+@dataclass
+class Backdrop:
+    """The background step's outcome: the image to export and how it was reached."""
 
-    ANTS wants a plain, light background with no shadow cast on it, so the sitter is
-    composited onto UNIFORM_BACKGROUND rather than the original being merely evened out.
+    image: np.ndarray
+    decision: str  # one of DECISIONS
+    alpha: np.ndarray | None = None  # final subject opacity, when the wall was replaced
+    coarse: np.ndarray | None = None  # the segmentation, whenever there was one
+    residual: float = 0.0
+
+    @property
+    def replaced(self) -> bool:
+        return self.decision == "replaced"
+
+    @property
+    def wall_pixels(self) -> np.ndarray | None:
+        """Where the background is, for measuring it on the delivered file."""
+        if self.alpha is not None:
+            return self.alpha <= 0.02
+        if self.coarse is not None:
+            return self.coarse < background.SURE_BG_ALPHA
+        return None
+
+
+def flatten_background(
+    image: np.ndarray, face_box: tuple[float, float, float, float] | None, mode: str = "always",
+) -> Backdrop:
+    """Set the sitter on the client's colour, UNIFORM_BACKGROUND_HEX, and nothing else.
+
     Segmentation comes from MediaPipe when it is installed — it follows hair and
     shoulders, which a rectangle-initialised GrabCut cannot — and falls back to GrabCut
-    otherwise.  `face_box` is in this image's own coordinates, not the source frame's.
+    otherwise; background.unify() then does the matting and compositing (see there for
+    why a plain alpha blend leaves darker and lighter patches).  `face_box` is in this
+    image's own coordinates.
 
-    Returns the composited image and the alpha it used, so that background_ok can be
-    graded where the subject actually is not.  On failure it hands back the very same
-    array it was given, and no alpha.
+    "auto" keeps the original only when its wall already *is* the target colour, to
+    within a just-noticeable difference.  The old rule kept any light, even grey, which
+    is how photos reached the panel at 214, 221 and 228 with their own vignettes.
     """
-    alpha = person_mask(image)
-    if alpha is None:
-        alpha = _grabcut_alpha(image, face_box)
-    if alpha is None:
-        return image, None
-    if face_box is not None and not _subject_intact(alpha, face_box):
-        return image, None
-    alpha = np.clip((alpha - 0.5) * EDGE_SHARPNESS + 0.5, 0.0, 1.0)
-    alpha = cv2.GaussianBlur(alpha, (0, 0), EDGE_FEATHER)
-    plain = np.full_like(image, UNIFORM_BACKGROUND, dtype=np.uint8)
-    composited = np.clip(image * alpha[..., None] + plain * (1 - alpha[..., None]), 0, 255).astype(np.uint8)
-    return composited, alpha
+    if mode == "never":
+        return Backdrop(image, "kept_never")
+    coarse = person_mask(image)
+    if coarse is None:
+        coarse = _grabcut_alpha(image, face_box)
+    if coarse is None:
+        return Backdrop(image, "kept_no_mask")
+    if face_box is not None and not _subject_intact(coarse, face_box):
+        # Shipping a mutilated photograph would be worse than the original wall;
+        # background_ok then reports the failure to the reviewer.
+        return Backdrop(image, "kept_unsafe", coarse=coarse)
+    if mode == "auto":
+        mean, p95 = background.target_match(image, coarse < background.SURE_BG_ALPHA)
+        if mean <= background.KEEP_DELTA_E_MEAN_MAX and p95 <= background.KEEP_DELTA_E_P95_MAX:
+            return Backdrop(image, "kept_matching", coarse=coarse)
+    matte = background.unify(image, coarse, face_box)
+    if matte is None:
+        return Backdrop(image, "kept_unsafe", coarse=coarse)
+    return Backdrop(matte.image, "replaced", alpha=matte.alpha, coarse=coarse, residual=matte.residual_wall)
+
+
+DECISIONS = {
+    "replaced": f"fond remplacé par {UNIFORM_BACKGROUND_HEX}",
+    "kept_matching": "fond d'origine déjà à la couleur imposée",
+    "kept_never": "remplacement désactivé (FLATTEN_BACKGROUND=never)",
+    "kept_unsafe": "découpe refusée : elle aurait entamé le sujet",
+    "kept_no_mask": "aucune segmentation disponible",
+}
+
+
+def delivered_background(delivered: np.ndarray, backdrop: Backdrop) -> BackgroundStats:
+    """Grade the background of the file that will actually be sent, after JPEG."""
+    where = backdrop.wall_pixels
+    if where is None or int(where.sum()) < 64:
+        height, width = delivered.shape[:2]
+        where = np.zeros((height, width), bool)
+        band, shoulder_line = max(2, width // 12), max(2, int(0.60 * height))
+        where[:shoulder_line, :band] = True
+        where[:shoulder_line, -band:] = True
+    base = background_stats(delivered, (~where).astype(np.float32))
+    mean, p95 = background.target_match(delivered, where)
+    return base._replace(delta_e=mean, delta_e_p95=p95, residual=backdrop.residual, decision=backdrop.decision)
 
 
 def _grabcut_alpha(image: np.ndarray, face_box: tuple[int, int, int, int] | None) -> np.ndarray | None:
@@ -845,8 +929,8 @@ def build_checks(
         Check("framing_ok", "Cadrage complet dans la photo source",
               PASS if padding <= PADDING_LIMIT else FAIL,
               f"{padding:.1%} de marge ajoutée" if padding else ""),
-        Check("background_ok", "Fond uni, gris clair, non blanc",
-              PASS if background.ok else FAIL, background.detail),
+        Check("background_ok", f"Fond uni {UNIFORM_BACKGROUND_HEX} (couleur imposée)",
+              PASS if background.matches_target else FAIL, background.target_detail),
         Check("exposure_ok", "Luminosité et contraste corrects",
               PASS if exposure.ok else FAIL, exposure.detail),
         Check("sharpness_ok", "Netteté suffisante", PASS if sharpness >= SHARPNESS_MIN else FAIL,
@@ -868,7 +952,7 @@ def _measure_detail(geometry: FaceGeometry | None, keys: tuple[str, ...]) -> str
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────────
-def process(data: bytes, override: CropOverride | None = None, flatten: str = "auto") -> ProcessedImage:
+def process(data: bytes, override: CropOverride | None = None, flatten: str = "always") -> ProcessedImage:
     """Crop, correct and grade one identity photograph."""
     override = override or CropOverride()
     try:
@@ -888,41 +972,35 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         x, y, w, h = geometry.box
         face_in_crop = (int(x - box[0]), int(y - box[1]), w, h)  # crop coordinates
 
-    replaced, cut_alpha = False, None
-    if flatten != "never":
-        # "always" is the deployed setting: ANTS wants a plain light background with no
-        # shadow behind the sitter, and a photograph taken at home never has one. "auto"
-        # remains for tuning, and only intervenes when the original is out of spec — which
-        # includes a tinted wall (beige, cream, pale blue), not just a dark or busy one.
-        if flatten == "always" or not background_stats(crop).ok:
-            candidate, alpha = flatten_background(crop, face_in_crop)
-            # flatten_background() hands back the very same array when it could not cut
-            # the subject out safely; shipping a mutilated photograph would be worse than
-            # the busy original, and background_ok then reports the failure to the panel.
-            if candidate is not crop:
-                crop, replaced, cut_alpha = candidate, True, alpha
-
     # Export at the sanctioned ratio: twice the minimum when the source can feed it.
     factor = 2 if crop.shape[0] >= 2 * OUT_HEIGHT else 1
     size = (OUT_WIDTH * factor, OUT_HEIGHT * factor)
     interpolation = cv2.INTER_AREA if crop.shape[0] > size[1] else cv2.INTER_CUBIC
     export = cv2.resize(crop, size, interpolation=interpolation)
-    encoded, quality = imaging.encode_jpeg(export, MAX_BYTES)
-
-    crop_h = box[3]
-    head_ratio = visible_head_ratio(geometry, box, source) if geometry else 0.0
-    eye_level = ((geometry.eye_centre[1] - box[1]) / crop_h) if geometry and crop_h else 0.0
-    ears_visible = ears_in_crop(geometry, box)
-    sharpness = imaging.laplacian_sharpness(export)
     # The face box travels from crop pixels to export pixels with the export resize.
     face_in_export = None
     if face_in_crop is not None:
         scale_x, scale_y = export.shape[1] / crop.shape[1], export.shape[0] / crop.shape[0]
         x, y, w, h = face_in_crop
         face_in_export = (x * scale_x, y * scale_y, w * scale_x, h * scale_y)
+
+    # The background is unified at delivery size: the matte is computed on exactly the
+    # pixels that will be sent, and a 0.9 Mpx matting pass costs a fraction of one on the
+    # full-resolution crop.
+    backdrop = flatten_background(export, face_in_export, flatten)
+    export = backdrop.image
+    encoded, quality = imaging.encode_jpeg(export, MAX_BYTES)
+    # Graded on the decoded JPEG — what ePhoto receives — not on the array before encoding.
+    background_report = delivered_background(imaging.decode(encoded), backdrop)
+
+    crop_h = box[3]
+    head_ratio = visible_head_ratio(geometry, box, source) if geometry else 0.0
+    eye_level = ((geometry.eye_centre[1] - box[1]) / crop_h) if geometry and crop_h else 0.0
+    ears_visible = ears_in_crop(geometry, box)
+    sharpness = imaging.laplacian_sharpness(export)
     exposure = face_exposure(export, face_in_export)
     checks = build_checks(
-        geometry, export, encoded, padding, background_stats(export, cut_alpha), sharpness,
+        geometry, export, encoded, padding, background_report, sharpness,
         head_ratio, eye_level, exposure, ears_visible,
     )
     metadata = {
@@ -932,9 +1010,13 @@ def process(data: bytes, override: CropOverride | None = None, flatten: str = "a
         "eye_level": round(eye_level, 3),
         "tilt_degrees": round(geometry.roll_degrees, 2) if geometry else None,
         "padding_fraction": round(padding, 4),
-        "background_replaced": replaced,
+        "background_replaced": backdrop.replaced,
         "background_target": UNIFORM_BACKGROUND_HEX,
         "background_replacement_mode": flatten,
+        "background_decision": backdrop.decision,
+        "background_delta_e": None if math.isnan(background_report.delta_e) else round(background_report.delta_e, 2),
+        "background_delta_e_p95": None if math.isnan(background_report.delta_e_p95) else round(background_report.delta_e_p95, 2),
+        "background_residual": round(background_report.residual, 4),
         "exposure_normalized": exposure_normalized,
         "ears_visible": ears_visible,
         "face_exposure": round(exposure.median, 1),
@@ -960,7 +1042,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("input"))
     parser.add_argument("--output", type=Path, default=Path("output_photos"))
-    parser.add_argument("--flatten", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("--flatten", choices=("auto", "always", "never"), default="always")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     for path in sorted(p for p in args.input.iterdir() if p.is_file()):

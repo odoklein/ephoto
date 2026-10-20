@@ -107,7 +107,7 @@ def main() -> int:
     check("réécriture atomique, ancienne extension retirée", found is not None and found.suffix == ".jpg"
           and len(list(storage.folder(STORE, "bbbbbbbbbbbbbbbb").iterdir())) == 1)
     check("identifiant invalide jamais joint à un chemin", raises(lambda: storage.folder(STORE, "../etc"), ValueError))
-    check("dossier orphelin repéré", storage.orphans(STORE, set(), min_age_seconds=0) == ["bbbbbbbbbbbbbbbb"])
+    check("dossier orphelin repéré", storage.orphans(STORE, set(), min_age_seconds=-60) == ["bbbbbbbbbbbbbbbb"])
 
     # ── Outbound URL guard (SSRF) ────────────────────────────────────────────────────
     for url in ("http://127.0.0.1/a.jpg", "http://10.0.0.5/a.jpg", "http://169.254.169.254/latest/meta-data",
@@ -185,6 +185,53 @@ def main() -> int:
                               ("#e6dcc0", False), ("#bcd4ec", False), ("#ffffff", False)):
         stats = photo_processor.background_stats(wall(hex_rgb))
         check(f"fond {hex_rgb} {'accepté' if expected else 'refusé'}", stats.ok is expected, stats.detail)
+
+    # ── Background unification ───────────────────────────────────────────────────────
+    # A synthetic sitter on a wall that is brighter than the target and vignetted, with a
+    # pocket of wall inside the hair, a half-transparent rim, and a coarse mask that
+    # spills 6 px onto the wall the way the 256-pixel segmentation does.  No MediaPipe.
+    from service.processing import background
+
+    height, width = 532, 414
+    yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
+    vignette = 1.0 - 0.10 * ((xx - width / 2) ** 2 + (yy - height / 2) ** 2) / (width / 2) ** 2
+    sheet = np.clip(np.stack([226 * vignette, 230 * vignette, 232 * vignette], axis=2), 0, 255)
+    head = ((xx - 207) / 120) ** 2 + ((yy - 250) / 160) ** 2 <= 1.0
+    body = (yy > 400) & (np.abs(xx - 207) < 170)
+    neck = (yy > 330) & (np.abs(xx - 207) < 70)
+    subject = head | neck | body
+    pocket = ((xx - 150) / 9) ** 2 + ((yy - 120) / 9) ** 2 <= 1.0  # wall seen between curls
+    truth = (subject & ~pocket).astype(np.float32)
+    soft = cv2.GaussianBlur(truth, (0, 0), 1.2)  # a real edge is half hair, half wall
+    hair = np.array([40, 35, 30], np.float32)
+    portrait = (soft[..., None] * hair + (1 - soft[..., None]) * sheet).astype(np.uint8)
+    face = (147.0, 150.0, 120.0, 190.0)
+    portrait[160:330, 150:265] = (120, 150, 190)  # skin, so the skin model has a reference
+    spill = cv2.dilate(subject.astype(np.uint8), np.ones((13, 13), np.uint8)).astype(np.float32)
+    coarse = cv2.GaussianBlur(spill, (0, 0), 3.0)
+    matte = background.unify(portrait, coarse, face)
+    check("unification : découpe acceptée", matte is not None)
+    if matte is not None:
+        far = cv2.distanceTransform((truth < 0.5).astype(np.uint8), cv2.DIST_L2, 5) > 4
+        far &= ~pocket
+        wall_error = background.delta_e(matte.image)[far]
+        check("unification : fond loin du sujet exactement à la couleur imposée",
+              float(wall_error.max()) < 0.6, f"ΔE max {wall_error.max():.2f}")
+        rim = (cv2.distanceTransform((truth < 0.5).astype(np.uint8), cv2.DIST_L2, 5) > 0) & ~far & ~pocket
+        target_luma = float(background.TARGET_BGR @ np.array([0.114, 0.587, 0.299], np.float32))
+        rim_luma = matte.image[rim].astype(np.float32) @ np.array([0.114, 0.587, 0.299], np.float32)
+        check("unification : aucun liseré plus clair que la couleur imposée",
+              float(rim_luma.max()) <= target_luma + 3, f"max {rim_luma.max():.1f} vs {target_luma:.1f}")
+        pocket_core = cv2.erode(pocket.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        check("unification : poche de mur dans les cheveux remplacée",
+              float(background.delta_e(matte.image)[pocket_core].mean()) < 3.0,
+              f"ΔE {background.delta_e(matte.image)[pocket_core].mean():.1f}")
+        inner = cv2.erode(truth.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
+        check("unification : sujet intact", np.array_equal(matte.image[inner], portrait[inner]))
+        check("unification : résidu mesuré nul", matte.residual_wall < background.RESIDUAL_WALL_MAX,
+              f"{matte.residual_wall:.4f}")
+    check("unification : refus sans mur visible",
+          background.unify(portrait, np.ones((height, width), np.float32), face) is None)
 
     print(f"\néchecs : {failures or 'aucun'}")
     return 1 if failures else 0

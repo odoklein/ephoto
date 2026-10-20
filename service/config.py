@@ -103,10 +103,12 @@ def load_settings() -> Settings:
     storage = Path(os.environ.get("STORAGE_DIR", ROOT / "storage")).resolve()
     warnings: list[str] = []
 
-    flatten = os.environ.get("FLATTEN_BACKGROUND", "auto").strip().lower()
+    # "always": every photograph leaves on the client's colour.  "auto" now keeps an
+    # original only when its wall already is that colour (see background.py).
+    flatten = os.environ.get("FLATTEN_BACKGROUND", "always").strip().lower()
     if flatten not in FLATTEN_MODES:
-        warnings.append(f"FLATTEN_BACKGROUND={flatten!r} inconnu ; « auto » utilisé")
-        flatten = "auto"
+        warnings.append(f"FLATTEN_BACKGROUND={flatten!r} inconnu ; « always » utilisé")
+        flatten = "always"
 
     public_base_url = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
     outbound_url = os.environ.get("MAKE_WEBHOOK_URL", "").strip()

@@ -105,6 +105,10 @@
     'background_replaced': 'Fond remplacé',
     'background_target': 'Couleur de fond cible',
     'background_replacement_mode': 'Mode de remplacement du fond',
+    'background_decision': 'Traitement du fond',
+    'background_delta_e': 'Écart moyen à la couleur imposée (ΔE)',
+    'background_delta_e_p95': 'Écart maximal à la couleur imposée (ΔE p95)',
+    'background_residual': 'Restes de l’ancien fond',
     'exposure_normalized': 'Exposition corrigée',
     'ears_visible': 'Visibilité des oreilles',
     'face_exposure': 'Luminosité du visage',
@@ -147,6 +151,11 @@
   {%- elif value == 'none' -%}Aucune
   {%- elif value == 'automatic' -%}Automatique
   {%- elif value == 'manual' -%}Manuelle
+  {%- elif value == 'replaced' -%}Remplacé par la couleur imposée
+  {%- elif value == 'kept_matching' -%}Conservé (déjà à la couleur imposée)
+  {%- elif value == 'kept_never' -%}Conservé (remplacement désactivé)
+  {%- elif value == 'kept_unsafe' -%}Conservé (découpe refusée)
+  {%- elif value == 'kept_no_mask' -%}Conservé (aucune segmentation)
   {%- else -%}{{ value }}
   {%- endif -%}
 {%- endmacro %}

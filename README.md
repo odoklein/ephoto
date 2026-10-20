@@ -143,7 +143,7 @@ angle depuis la fiche ; le recalcul repart toujours de l'original.
 | `STORAGE_DIR` | `/data` (Docker) | Images et base SQLite |
 | `PURGE_AFTER_DAYS` | `30` | Purge des dossiers décidés (RGPD) |
 | `PURGE_OPEN_AFTER_DAYS` | `0` (jamais) | Purge des dossiers jamais décidés |
-| `FLATTEN_BACKGROUND` | `auto` | `always`, `auto` ou `never` pour le détourage du fond |
+| `FLATTEN_BACKGROUND` | `always` | `always` : fond toujours unifié à `#d4d7d3` ; `auto` : conservé seulement s'il l'est déjà ; `never` |
 | `PUBLIC_BASE_URL` | — | Préfixe du lien de contrôle ; sert aussi au contrôle d'origine (CSRF) |
 | `PROCESSING_WORKERS` | `2` | Images traitées en parallèle (≈ 300 Mo chacune au pire) |
 | `FETCH_ALLOWED_HOSTS` | — | Domaines autorisés pour les URL d'images (ex. `boutique.fr`) ; recommandé |
@@ -183,15 +183,30 @@ l'inclinaison de la tête, les yeux ouverts, la bouche fermée, la visibilité d
 l'uniformité et la clarté du fond, l'exposition, la netteté et la présence d'un seul
 visage.
 
-**Détourage conditionnel.** Une photo de studio dont le fond est déjà conforme est
-conservée telle quelle : le service n'applique plus de filtre de contraste local ni de
-détourage par défaut. Si le fond doit être remplacé, le sujet est reposé sur le gris
-verrouillé **`#d4d7d3`**. La couleur est imposée par le service : « le fond doit être uni,
-de couleur claire (bleu clair ou gris clair par exemple). **Le fond blanc est interdit** »
-([service-public.fr F10619](https://www.service-public.gouv.fr/particuliers/vosdroits/F10619)),
-d'où un `UNIFORM_BACKGROUND_HEX` unique et un contrôle de fond borné des deux côtés. La
-segmentation vient de **MediaPipe Selfie Segmentation** ; GrabCut ne sert plus que de
-repli, et une garde annule le détourage plutôt que d'entamer le visage.
+**Fond unifié.** Chaque photo part sur le gris choisi par le client, **`#d4d7d3`**,
+exactement et partout : « le fond doit être uni, de couleur claire (bleu clair ou gris
+clair par exemple). **Le fond blanc est interdit** »
+([service-public.fr F10619](https://www.service-public.gouv.fr/particuliers/vosdroits/F10619)).
+Auparavant, un fond « déjà acceptable » était conservé avec son propre gris (214, 221,
+228…) et son vignetage, et le fond remplacé gardait l'ancien mur dans les bords : d'où
+des zones plus claires et d'autres plus sombres. `service/processing/background.py` :
+
+1. segmentation MediaPipe (image et miroir, moyennées), GrabCut en repli ;
+2. trimap : mur certain, sujet protégé (visage, cœur du corps), zone affinée autour du
+   contour — profonde dans les cheveux, où se cachent des poches de mur ;
+3. le mur d'origine est modélisé comme un champ de couleur lisse (son ombrage compris), la
+   couleur du sujet localement, et la peau à partir du visage de la personne ;
+4. opacité par modèle local à deux couleurs (un pixel mi-cheveu mi-mur vaut 0,5),
+   affinée par filtre guidé couleur ; la couleur ne fait que *retirer* du mur, jamais
+   inventer du sujet, et ne touche pas ce qui ressemble à la peau (oreilles) ;
+5. composition sans halo : la part de l'ancien mur est retirée de chaque pixel de bord
+   avant de le reposer sur `#d4d7d3` ; les pixels de mur valent exactement la couleur.
+
+Le critère « Fond uni #d4d7d3 » est mesuré **sur le JPEG livré** : écart moyen
+ΔE ≤ 2 (seuil de perception ≈ 2,3), p95 ≤ 5, et moins de 1 % de la zone de contour
+portant encore l'ancien mur. Les valeurs figurent dans les données techniques du dossier.
+Une garde refuse la découpe plutôt que d'entamer le visage ; le critère échoue alors et
+le contrôleur le voit.
 
 **Exposition.** Notée sur l'écrêtage et le contraste du visage, pas sur sa clarté absolue :
 la carnation couvre légitimement toute l'échelle, et un seuil absolu refuserait une peau
