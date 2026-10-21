@@ -79,6 +79,52 @@ def send(payload: dict) -> tuple[bool, str]:
     return False, f"refusé par Make ({response.status_code})"
 
 
+def _failed_labels(report: dict) -> list[str]:
+    return [str(check.get("label", "")) for check in report.get("checks", []) if check.get("status") == "fail"]
+
+
+def build_rejection(record: dict, reviewer: str) -> dict:
+    """What the refusal email needs, and nothing else: no images leave on a refusal."""
+    customer = record.get("customer") or {}
+    name = customer.get("first_name") or customer.get("name") or ""
+    photo_failures = _failed_labels(record.get("photo_report") or {})
+    signature_failures = _failed_labels(record.get("signature_report") or {})
+    return {
+        "event": "submission.rejected",
+        "submission_id": record["id"],
+        "order_id": record["source_ref"],
+        "customer": {"name": name, "email": customer.get("email", "")},
+        "reason": record.get("reviewer_note", ""),
+        "reviewer": reviewer,
+        "decided_at": record.get("decided_at", ""),
+        "photo_failures": photo_failures,
+        "signature_failures": signature_failures,
+        # Ready-to-print lines for the email, so the scenario needs no formatting logic.
+        "failures_text": "\n".join(
+            [f"• Photo : {label}" for label in photo_failures]
+            + [f"• Signature : {label}" for label in signature_failures]
+        ),
+        "correction_url": settings.correction_url,
+    }
+
+
+def notify_rejection(payload: dict) -> tuple[bool, str]:
+    """Ask Make to email the customer. A failure here never undoes the refusal."""
+    if not settings.reject_webhook_url:
+        return False, "MAKE_REJECT_WEBHOOK_URL non configuré : aucun e-mail envoyé"
+    headers = {"Content-Type": "application/json", "Idempotency-Key": f"reject-{payload['submission_id']}"}
+    if settings.outbound_token:
+        headers["Authorization"] = f"Bearer {settings.outbound_token}"
+    try:
+        response = httpx.post(settings.reject_webhook_url, json=payload, headers=headers,
+                              timeout=settings.outbound_timeout)
+    except httpx.HTTPError as error:
+        return False, f"e-mail de refus non envoyé (échec réseau: {error.__class__.__name__})"
+    if response.is_success:
+        return True, f"e-mail de refus demandé ({response.status_code})"
+    return False, f"e-mail de refus refusé par Make ({response.status_code})"
+
+
 # ── Source downloads ────────────────────────────────────────────────────────────────
 def _host_allowed(host: str, allowed: tuple[str, ...]) -> bool:
     return not allowed or any(host == item or host.endswith("." + item) for item in allowed)

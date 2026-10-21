@@ -30,6 +30,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 STORE = Path(tempfile.mkdtemp(prefix="ephoto-smoke-"))
 
 received: list[dict] = []
+rejections: list[dict] = []
 failures: list[str] = []
 
 
@@ -95,7 +96,8 @@ class Hook(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        received.append({"headers": dict(self.headers), "json": json.loads(body)})
+        target = rejections if self.path == "/reject" else received
+        target.append({"headers": dict(self.headers), "json": json.loads(body)})
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -134,6 +136,7 @@ def main() -> int:
         ADMIN_PASSWORD="secret-review",
         MAKE_WEBHOOK_URL=f"http://127.0.0.1:{server.server_port}/hook",
         MAKE_WEBHOOK_TOKEN="hook-token",
+        MAKE_REJECT_WEBHOOK_URL=f"http://127.0.0.1:{server.server_port}/reject",
         PUBLIC_BASE_URL="https://signature.example.fr",
     )
     sys.path.insert(0, str(PROJECT))
@@ -368,6 +371,15 @@ def main() -> int:
         check("refus enregistré", rejected.status_code == 200 and rejected.json()["status"] == "rejected")
         check("le contrôleur ne peut pas signer au nom d'un autre",
               "mallory" not in client.get(f"/admin/submissions/{second}", auth=auth).text)
+        deadline = time.monotonic() + 10
+        while not rejections and time.monotonic() < deadline:
+            time.sleep(0.1)
+        notice = rejections[0]["json"] if rejections else {}
+        check("e-mail de refus demandé à Make", notice.get("event") == "submission.rejected"
+              and notice.get("order_id") == "WC-10246" and notice.get("reason") == "photo floue"
+              and notice.get("customer", {}).get("email") == "leo@example.fr"
+              and notice.get("correction_url", "").startswith("https://certif-idphoto.fr/"), json.dumps(notice)[:300])
+        check("aucune image dans l'avis de refus", "photo" not in notice and "signature" not in notice)
         check("aucun envoi après refus", len(received) == 1)
         check("vue des refusés", second in client.get("/admin/dashboard?show=rejected", auth=auth).text)
 

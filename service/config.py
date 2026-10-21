@@ -62,6 +62,10 @@ class Settings:
     outbound_url: str
     outbound_token: str
     outbound_timeout: float
+    # Make scenario that emails the customer when a dossier is refused; empty = no email.
+    reject_webhook_url: str
+    # Page where the customer re-uploads after a refusal, linked from that email.
+    correction_url: str
     max_upload_bytes: int
     # A 15 MB JPEG can still decode to tens of gigapixels; the budget is checked from the
     # header before any pixel is allocated.
@@ -133,6 +137,10 @@ def load_settings() -> Settings:
         outbound_url=outbound_url,
         outbound_token=os.environ.get("MAKE_WEBHOOK_TOKEN", "").strip(),
         outbound_timeout=_float("MAKE_WEBHOOK_TIMEOUT", 20.0),
+        reject_webhook_url=os.environ.get("MAKE_REJECT_WEBHOOK_URL", "").strip(),
+        correction_url=os.environ.get(
+            "CORRECTION_URL", "https://certif-idphoto.fr/correction-de-votre-commande/"
+        ).strip(),
         max_upload_bytes=_int("MAX_UPLOAD_BYTES", 15 * 1024 * 1024, minimum=1024),
         max_image_pixels=_int("MAX_IMAGE_PIXELS", 60_000_000, minimum=1_000_000),
         # Identity photographs are personal data: they are not kept indefinitely.

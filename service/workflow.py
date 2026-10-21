@@ -353,7 +353,11 @@ def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
             raise WorkflowError(409, "Le dossier vient de changer d'état ou une opération est en cours ; rechargez la fiche.")
         database.log_event(path, submission_id, "rejected", reviewer, note=note)
         log.info("decide %s: rejected by %s", submission_id, reviewer)
-        return load(submission_id)
+        rejected = load(submission_id)
+        # The customer email goes out in the background: the refusal is recorded either
+        # way, and the reviewer is not kept waiting on Make.
+        threading.Thread(target=_notify_rejection, args=(rejected, reviewer), daemon=True).start()
+        return rejected
 
     blocker = accept_blocker(record)
     if blocker:
@@ -379,6 +383,16 @@ def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
         return load(submission_id)
     finally:
         database.release(path, submission_id)
+
+
+def _notify_rejection(record: dict, reviewer: str) -> None:
+    try:
+        sent, result = outbound.notify_rejection(outbound.build_rejection(record, reviewer))
+    except Exception as error:  # noqa: BLE001 - logged and recorded, never raised
+        sent, result = False, f"e-mail de refus non envoyé ({type(error).__name__})"
+    database.log_event(settings.database_path, record["id"],
+                       "rejection_notified" if sent else "rejection_notify_failed", SYSTEM, result=result)
+    log.log(logging.INFO if sent else logging.WARNING, "decide %s: %s", record["id"], result)
 
 
 # ── Retention ───────────────────────────────────────────────────────────────────────

@@ -55,6 +55,8 @@ EVENT_LABELS = {
     "transmission_failed": "Échec de transmission",
     "accepted": "Accepté et transmis",
     "rejected": "Refusé",
+    "rejection_notified": "E-mail de correction envoyé au client",
+    "rejection_notify_failed": "E-mail de correction non envoyé",
 }
 
 
