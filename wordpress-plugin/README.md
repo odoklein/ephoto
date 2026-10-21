@@ -1,6 +1,6 @@
 # Certif ID – Contrôle photos ANTS & Signature (plugin WordPress)
 
-Version 2.1.1. Écran de contrôle WooCommerce branché sur le service Python de contrôle photo/signature.
+Version 2.2.0. Écran de contrôle WooCommerce branché sur le service Python de contrôle photo/signature.
 
 ## Installation
 
@@ -39,6 +39,16 @@ Les dossiers doivent arriver au service par **un seul** chemin :
 Le bouton **Lancer l'analyse** reste disponible : si le service a déjà le dossier (mêmes fichiers), il renvoie le dossier existant (`duplicate: true`), qui est simplement rattaché à la commande. Un dossier en cours, prêt à contrôler ou accepté n'est jamais renvoyé ; « Relancer l'analyse » n'existe que pour un dossier refusé, en erreur ou purgé.
 
 La transmission vers Make / ePhoto après acceptation est faite par le service (`MAKE_WEBHOOK_URL`), pas par WordPress.
+
+## Refus et correction par le client
+
+À chaque refus, le service demande à Make l'e-mail de correction (`MAKE_REJECT_WEBHOOK_URL`). Ce que le plugin fait en plus :
+
+- **Statut « Correction demandée »** (nouveau, choisi par défaut). WooCommerce n'envoie aucun e-mail pour ce statut. L'ancien défaut « Échouée » envoyait l'e-mail « Commande échouée » à la boutique, et selon la version au client, en plus de l'e-mail de correction. À la mise à jour vers 2.2.0, un réglage resté sur « Échouée » passe à « Correction demandée ».
+- **Lien personnel.** Choisissez la **Page de correction client** dans les réglages. Le champ `correction_url` reçu par Make contient alors un lien signé, propre à la commande refusée, et non plus le lien générique. Le lien ne sert qu'une fois : après l'envoi, il affiche une confirmation.
+- **Formulaire de correction.** Ouverte avec ce lien, la page remplace son contenu par un formulaire court : motif du refus, contrôles en échec, nouvelle photo et/ou nouvelle signature (tracée au doigt ou envoyée en image). Il n'y a pas de nouvelle commande ni de nouveau paiement. Le shortcode `[certif_ephoto_correction]` permet aussi de placer ce formulaire sur une autre page.
+- **Retour automatique dans « À traiter ».** Les fichiers sont rattachés à la commande d'origine, qui reprend son statut d'avant le refus, sans e-mail. Une nouvelle analyse est lancée en arrière-plan. Le dossier réapparaît dans « À traiter » avec le badge « Correction n° N ». Si l'envoi au service échoue, une note est ajoutée et « Relancer l'analyse » reprend les fichiers corrigés.
+- **Écran de contrôle.** Le refus se fait dans un panneau intégré, avec des motifs suggérés à partir des contrôles en échec. Un dossier refusé affiche son motif, depuis quand il attend, et son lien de correction à copier.
 
 ## Droits
 

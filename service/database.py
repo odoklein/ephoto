@@ -228,6 +228,20 @@ def find_duplicate(path: Path, fingerprint: str) -> dict | None:
     return _decode(row) if row else None
 
 
+def latest_with_reference(path: Path, source_ref: str, statuses: tuple[str, ...]) -> dict | None:
+    """The newest dossier of this order in one of `statuses`, if any."""
+    if not source_ref:
+        return None
+    placeholders = ",".join("?" * len(statuses))
+    with connect(path) as connection:
+        row = connection.execute(
+            f"SELECT * FROM submissions WHERE source_ref = ? AND status IN ({placeholders})"
+            " ORDER BY created_at DESC LIMIT 1",
+            (source_ref, *statuses),
+        ).fetchone()
+    return _decode(row) if row else None
+
+
 def with_status(path: Path, status: str) -> list[str]:
     with connect(path) as connection:
         rows = connection.execute("SELECT id FROM submissions WHERE status = ?", (status,)).fetchall()

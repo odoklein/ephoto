@@ -155,7 +155,10 @@ def submission_status(submission_id: str, _: str = Depends(require_reader)) -> d
 # ── Review over the API (WordPress) ─────────────────────────────────────────────────
 @router.post("/api/v1/validate/{submission_id}")
 def validate(submission_id: str, payload: dict = Body(default={}), reviewer: str = Depends(require_reviewer)) -> dict:
-    """Controller action, API form: {"action": "accept" | "reject", "reason": "..."}.
+    """Controller action, API form: {"action": "accept" | "reject", "reason": "...", "correction_url": "..."}.
+
+    `correction_url`, optional, is the customer's personal upload link for the refusal
+    email; it is used only when it is on the same site as CORRECTION_URL.
 
     The reviewer is the authenticated one.  A `reviewer` field in the body used to
     override it, which let any caller sign a decision with someone else's name.
@@ -165,6 +168,7 @@ def validate(submission_id: str, payload: dict = Body(default={}), reviewer: str
         str(payload.get("action", "")),
         reviewer,
         str(payload.get("reason") or payload.get("note") or ""),
+        str(payload.get("correction_url") or ""),
     )
     return {
         "submission_id": record["id"], "status": record["status"],

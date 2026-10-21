@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Certif ID – Contrôle photos ANTS & Signature
  * Description:       Contrôle de conformité des photos d'identité (norme ANTS) et des signatures depuis WooCommerce, avec recadrage et transmission Make / ePhoto.
- * Version:           2.1.1
+ * Version:           2.2.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            Suzali
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'CERTIF_EPHOTO_VERSION', '2.1.1' );
+define( 'CERTIF_EPHOTO_VERSION', '2.2.0' );
 define( 'CERTIF_EPHOTO_FILE', __FILE__ );
 define( 'CERTIF_EPHOTO_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CERTIF_EPHOTO_URL', plugin_dir_url( __FILE__ ) );
@@ -37,6 +37,7 @@ require_once CERTIF_EPHOTO_DIR . 'includes/class-certif-ephoto-settings.php';
 require_once CERTIF_EPHOTO_DIR . 'includes/class-certif-ephoto-hooks.php';
 require_once CERTIF_EPHOTO_DIR . 'includes/class-certif-ephoto-admin.php';
 require_once CERTIF_EPHOTO_DIR . 'includes/class-certif-ephoto-privacy.php';
+require_once CERTIF_EPHOTO_DIR . 'includes/class-certif-ephoto-correction.php';
 
 // Settings shortcut on the plugins screen.
 add_filter(
@@ -71,5 +72,6 @@ function certif_ephoto_init() {
 	Certif_Ephoto_Hooks::init();
 	Certif_Ephoto_Admin::init();
 	Certif_Ephoto_Privacy::init();
+	Certif_Ephoto_Correction::init();
 }
 add_action( 'plugins_loaded', 'certif_ephoto_init' );

@@ -21,6 +21,7 @@
 		status: '',
 		acceptReady: false,
 		busy: false,
+		review: null,
 		pollTimer: null,
 		pollCount: 0
 	};
@@ -117,6 +118,8 @@
 		state.status = '';
 		state.acceptReady = false;
 		state.busy = false;
+		state.review = null;
+		hideRejectPanel();
 		updateActionButtons();
 	}
 
@@ -139,6 +142,7 @@
 		state.token += 1; // Invalidate any in-flight response.
 		state.orderId = 0;
 		state.busy = false;
+		hideRejectPanel();
 		$('#certif-review-modal').fadeOut(150);
 	}
 
@@ -213,6 +217,7 @@
 		state.orderId = orderId;
 		state.status = sub.status || '';
 		state.acceptReady = sub.accept_ready === true;
+		state.review = review;
 
 		$('#modal-order-title').text(t('titlePrefix') + (review.order_number || orderId));
 		var customer = review.customer || {};
@@ -237,6 +242,7 @@
 		renderChecks($('#modal-sign-checks'), sub.signature);
 
 		renderStatus(sub);
+		renderCorrection(review.correction || {}, sub.status || '');
 
 		$('#modal-error-box').hide().text('');
 		$('#modal-loading-indicator').hide();
@@ -306,6 +312,105 @@
 		}
 
 		$('#modal-forward-status').text(sub.forward_status ? t('forwardLabel') + ' ' + sub.forward_status : '');
+	}
+
+	/**
+	 * Where the customer's correction stands: personal link to copy, or files received.
+	 */
+	function renderCorrection(correction, status) {
+		var $box = $('#modal-correction-box');
+		if (!$box.length) {
+			$box = $('<div id="modal-correction-box" class="certif-correction-box"></div>').insertAfter('#modal-status-banner');
+		}
+		$box.empty().hide();
+		if (correction.pending && correction.corrected_at) {
+			$box.text(t('correctionPending').replace('%s', correction.corrected_at)).show();
+			return;
+		}
+		if (status === 'rejected' && correction.link) {
+			var $input = $('<input type="text" readonly class="certif-correction-link">').val(correction.link);
+			var $copy = $('<button type="button" class="button button-small"></button>').text(t('copyLink'));
+			$copy.on('click', function () {
+				copyText(correction.link, $input);
+			});
+			$box.append($('<span class="certif-correction-label"></span>').text(t('correctionLinkLabel')), $input, $copy).show();
+			return;
+		}
+		if (correction.round > 0 && status !== 'rejected') {
+			$box.text(t('correctionRound').replace('%d', correction.round)).show();
+		}
+	}
+
+	function copyText(text, $fallback) {
+		var done = function () {
+			showToast(t('linkCopied'));
+		};
+		if (navigator.clipboard && window.isSecureContext) {
+			navigator.clipboard.writeText(text).then(done, function () {
+				$fallback.trigger('select');
+				showToast(t('copyFailed'));
+			});
+			return;
+		}
+		$fallback.trigger('select');
+		try {
+			document.execCommand('copy');
+			done();
+		} catch (e) {
+			showToast(t('copyFailed'));
+		}
+	}
+
+	function showToast(text) {
+		var $toast = $('#certif-toast');
+		if (!$toast.length) {
+			$toast = $('<div id="certif-toast" class="certif-toast" role="status" aria-live="polite"></div>').appendTo('body');
+		}
+		window.clearTimeout(showToast.timer);
+		$toast.text(text).addClass('is-visible');
+		showToast.timer = window.setTimeout(function () {
+			$toast.removeClass('is-visible');
+		}, 2600);
+	}
+
+	/* ------------------------------------------------------------------
+	 * Reject panel
+	 * ------------------------------------------------------------------ */
+
+	function failedLabels(report, prefix) {
+		var labels = [];
+		$.each(report && report.checks ? report.checks : [], function (i, ch) {
+			if (ch.status === 'fail' && (ch.label || ch.key)) {
+				labels.push(prefix + ' : ' + (ch.label || ch.key));
+			}
+		});
+		return labels;
+	}
+
+	function openRejectPanel() {
+		var sub = state.review && state.review.submission ? state.review.submission : {};
+		var correction = state.review && state.review.correction ? state.review.correction : {};
+		var suggestions = failedLabels(sub.photo, 'Photo').concat(failedLabels(sub.signature, 'Signature'));
+		var $list = $('#certif-reject-suggestions').empty();
+		var $reason = $('#certif-reject-reason');
+
+		$.each(suggestions, function (i, label) {
+			$('<button type="button" class="certif-suggestion"></button>').text('+ ' + label).on('click', function () {
+				var current = String($reason.val() || '').trim();
+				$reason.val(current ? current + '\n' + label : label).trigger('focus');
+				$(this).prop('disabled', true);
+			}).appendTo($list);
+		});
+		$list.toggle(suggestions.length > 0);
+		$('#certif-reject-email-note').text(correction.enabled ? t('emailWithLink') : t('emailNoLink'));
+		$('#certif-reject-panel').prop('hidden', false);
+		$('.certif-modal-footer').addClass('is-hidden');
+		$reason.val('').trigger('focus');
+	}
+
+	function hideRejectPanel() {
+		$('#certif-reject-panel').prop('hidden', true);
+		$('.certif-modal-footer').removeClass('is-hidden');
 	}
 
 	function setScoreBadge($el, score) {
@@ -507,28 +612,31 @@
 			var orderId = state.orderId;
 			runAction({ action: 'certif_validate_order', action_type: 'accept' }, function (data) {
 				updateRowStatus(orderId, data.status || 'accepted');
-				window.alert(t('acceptedSuccess'));
+				showToast(t('acceptedSuccess'));
 				if (!data.review) {
 					closeReviewModal();
 				}
 			});
 		});
 
-		// Reject.
-		$('#btn-reject-dossier').on('click', function () {
-			var reason = window.prompt(t('rejectPrompt'));
-			if (reason === null) {
-				return;
-			}
-			reason = String(reason).trim();
+		// Reject: inline panel (reason the customer will read, suggested from failed checks).
+		$('#btn-reject-dossier').on('click', openRejectPanel);
+		$('#btn-reject-cancel').on('click', hideRejectPanel);
+		$('#certif-reject-panel').on('submit', function (e) {
+			e.preventDefault();
+			var $reason = $('#certif-reject-reason');
+			var reason = String($reason.val() || '').trim();
 			if (reason === '') {
-				window.alert(t('rejectEmpty'));
+				$reason[0].setCustomValidity(t('rejectEmpty'));
+				$reason[0].reportValidity();
+				$reason[0].setCustomValidity('');
 				return;
 			}
 			var orderId = state.orderId;
 			runAction({ action: 'certif_validate_order', action_type: 'reject', reason: reason }, function (data) {
+				hideRejectPanel();
 				updateRowStatus(orderId, data.status || 'rejected');
-				window.alert(t('rejectedSuccess'));
+				showToast(t('rejectedSuccess'));
 				if (!data.review) {
 					closeReviewModal();
 				}

@@ -1,0 +1,334 @@
+/**
+ * Customer correction form (front end). Scoped under .certif-correction so the
+ * theme's own styles are never affected.
+ */
+.certif-correction {
+	--cc-ink: #0f172a;
+	--cc-muted: #475569;
+	--cc-line: #e2e8f0;
+	--cc-surface: #ffffff;
+	--cc-soft: #f8fafc;
+	--cc-accent: #0f766e;
+	--cc-accent-ink: #ffffff;
+	--cc-warn-bg: #fff7ed;
+	--cc-warn-line: #fdba74;
+	--cc-error: #b91c1c;
+	--cc-success: #047857;
+	--cc-radius: 14px;
+	max-width: 640px;
+	margin: 24px auto;
+	color: var(--cc-ink);
+	font-size: 16px;
+	line-height: 1.55;
+	box-sizing: border-box;
+}
+
+.certif-correction *,
+.certif-correction *::before,
+.certif-correction *::after {
+	box-sizing: inherit;
+}
+
+.certif-correction__card {
+	background: var(--cc-surface);
+	border: 1px solid var(--cc-line);
+	border-radius: var(--cc-radius);
+	padding: 28px 24px;
+	box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.certif-correction__card--success,
+.certif-correction__card--neutral {
+	text-align: center;
+}
+
+.certif-correction__icon {
+	display: inline-grid;
+	place-items: center;
+	width: 48px;
+	height: 48px;
+	border-radius: 50%;
+	font-weight: 700;
+	font-size: 22px;
+	background: #e0f2fe;
+	color: #0369a1;
+	margin-bottom: 8px;
+}
+
+.certif-correction__card--success .certif-correction__icon {
+	background: #d1fae5;
+	color: var(--cc-success);
+}
+
+.certif-correction__eyebrow {
+	margin: 0 0 4px;
+	font-size: 13px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--cc-accent);
+}
+
+.certif-correction__title {
+	margin: 0 0 8px;
+	font-size: 24px;
+	line-height: 1.25;
+	color: var(--cc-ink);
+}
+
+.certif-correction__lead {
+	margin: 0 0 20px;
+	color: var(--cc-muted);
+}
+
+.certif-correction__reason {
+	background: var(--cc-warn-bg);
+	border: 1px solid var(--cc-warn-line);
+	border-radius: 10px;
+	padding: 14px 16px;
+	margin-bottom: 20px;
+}
+
+.certif-correction__reason h3 {
+	margin: 0 0 6px;
+	font-size: 15px;
+}
+
+.certif-correction__reason p {
+	margin: 0 0 6px;
+	font-style: italic;
+}
+
+.certif-correction__reason ul {
+	margin: 0;
+	padding-left: 18px;
+}
+
+.certif-correction__alert,
+.certif-correction__client-error {
+	color: var(--cc-error);
+	background: #fef2f2;
+	border: 1px solid #fecaca;
+	border-radius: 10px;
+	padding: 10px 14px;
+	margin: 0 0 16px;
+	font-weight: 600;
+}
+
+.certif-correction__part {
+	border: 1px solid var(--cc-line);
+	border-radius: 12px;
+	padding: 16px;
+	margin: 0 0 16px;
+	min-width: 0;
+}
+
+.certif-correction__part.is-requested {
+	border-color: var(--cc-accent);
+	box-shadow: 0 0 0 1px var(--cc-accent) inset;
+}
+
+.certif-correction__part legend {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 6px;
+	font-weight: 700;
+	font-size: 16px;
+}
+
+.certif-correction__step {
+	flex-shrink: 0;
+	display: inline-grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	background: var(--cc-accent);
+	color: var(--cc-accent-ink);
+	font-size: 13px;
+}
+
+.certif-correction__tag {
+	flex-shrink: 0;
+	white-space: nowrap;
+	margin-left: auto;
+	font-size: 12px;
+	font-weight: 600;
+	padding: 2px 8px;
+	border-radius: 999px;
+	background: var(--cc-soft);
+	color: var(--cc-muted);
+	border: 1px solid var(--cc-line);
+}
+
+.is-requested .certif-correction__tag {
+	background: #ccfbf1;
+	color: var(--cc-accent);
+	border-color: #99f6e4;
+}
+
+.certif-correction__hint {
+	margin: 4px 0 12px;
+	color: var(--cc-muted);
+	font-size: 14px;
+}
+
+.certif-correction__drop {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	min-height: 140px;
+	padding: 16px;
+	border: 2px dashed #cbd5e1;
+	border-radius: 12px;
+	background: var(--cc-soft);
+	cursor: pointer;
+	text-align: center;
+	transition: border-color 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+.certif-correction__drop:hover,
+.certif-correction__drop:focus-within {
+	border-color: var(--cc-accent);
+	background: #f0fdfa;
+}
+
+.certif-correction__drop input[type="file"] {
+	position: absolute;
+	inset: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.certif-correction__drop img {
+	max-height: 180px;
+	max-width: 100%;
+	border-radius: 8px;
+}
+
+.certif-correction__drop-text {
+	font-weight: 600;
+	color: var(--cc-accent);
+}
+
+.certif-correction__drop small {
+	color: var(--cc-muted);
+}
+
+.certif-correction__pad {
+	position: relative;
+	border: 2px dashed #cbd5e1;
+	border-radius: 12px;
+	background: #fff;
+	aspect-ratio: 521 / 134;
+	touch-action: none;
+}
+
+.certif-correction__pad canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+	cursor: crosshair;
+	border-radius: 10px;
+}
+
+.certif-correction__pad-placeholder {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	color: #94a3b8;
+	pointer-events: none;
+	font-size: 15px;
+}
+
+.certif-correction__link {
+	position: absolute;
+	top: 6px;
+	right: 8px;
+	background: none;
+	border: 0;
+	color: var(--cc-accent);
+	font-weight: 600;
+	cursor: pointer;
+	padding: 4px 6px;
+}
+
+.certif-correction__alt {
+	margin-top: 10px;
+	font-size: 14px;
+}
+
+.certif-correction__alt summary {
+	cursor: pointer;
+	color: var(--cc-accent);
+	font-weight: 600;
+}
+
+.certif-correction__alt input {
+	margin-top: 8px;
+	max-width: 100%;
+}
+
+.certif-correction__submit {
+	width: 100%;
+	min-height: 52px;
+	border: 0;
+	border-radius: 12px;
+	background: var(--cc-accent);
+	color: var(--cc-accent-ink);
+	font-size: 17px;
+	font-weight: 700;
+	cursor: pointer;
+	transition: filter 0.15s ease-out, transform 0.15s ease-out;
+}
+
+.certif-correction__submit:hover {
+	filter: brightness(1.08);
+}
+
+.certif-correction__submit:active {
+	transform: translateY(1px);
+}
+
+.certif-correction__submit:disabled {
+	opacity: 0.7;
+	cursor: progress;
+}
+
+.certif-correction__submit:focus-visible,
+.certif-correction__link:focus-visible,
+.certif-correction__alt summary:focus-visible {
+	outline: 3px solid #5eead4;
+	outline-offset: 2px;
+}
+
+.certif-correction__fineprint {
+	margin: 12px 0 0;
+	font-size: 13px;
+	color: var(--cc-muted);
+	text-align: center;
+}
+
+@media (max-width: 480px) {
+	.certif-correction__card {
+		padding: 22px 16px;
+	}
+	.certif-correction__title {
+		font-size: 21px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.certif-correction * {
+		transition: none !important;
+	}
+}
+
+.certif-correction [hidden] {
+	display: none !important;
+}

@@ -57,6 +57,8 @@ EVENT_LABELS = {
     "rejected": "Refusé",
     "rejection_notified": "E-mail de correction envoyé au client",
     "rejection_notify_failed": "E-mail de correction non envoyé",
+    "correction_received": "Correction du client reçue (remplace un dossier refusé)",
+    "corrected_by": "Le client a renvoyé des fichiers corrigés",
 }
 
 

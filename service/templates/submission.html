@@ -349,6 +349,8 @@
               {% if detail.get('error') %}<p class="mt-1 text-xs text-rose-700">{{ detail.error }}</p>{% endif %}
               {% if event.action == 'processed' %}<p class="mt-1 text-xs text-slate-600">Photo {{ detail.get('photo_score', 0) }} %, signature {{ detail.get('signature_score', 0) }} % · {{ detail.get('seconds', '?') }} s</p>{% endif %}
               {% if event.action == 'photo_recropped' %}<p class="mt-1 text-xs text-slate-600">zoom {{ detail.get('zoom') }}, dx {{ detail.get('dx') }}, dy {{ detail.get('dy') }} → {{ detail.get('score', 0) }} %</p>{% endif %}
+              {% if event.action == 'correction_received' and detail.get('previous_id') %}<p class="mt-1 text-xs text-slate-600">Refus précédent : <a class="font-medium text-teal-700" href="/admin/submissions/{{ detail.previous_id }}">{{ detail.previous_id[:8] }}</a>{% if detail.get('previous_note') %} · « {{ detail.previous_note }} »{% endif %}</p>{% endif %}
+              {% if event.action == 'corrected_by' and detail.get('next_id') %}<p class="mt-1 text-xs text-slate-600">Nouveau dossier : <a class="font-medium text-teal-700" href="/admin/submissions/{{ detail.next_id }}">{{ detail.next_id[:8] }}</a></p>{% endif %}
               {% if event.action == 'signature_rotated' %}<p class="mt-1 text-xs text-slate-600">{{ detail.get('rotation') }}° → {{ detail.get('score', 0) }} %</p>{% endif %}
             </li>
           {% endfor %}

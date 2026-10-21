@@ -45,7 +45,7 @@ class Certif_Ephoto_Admin {
 			'pending'    => __( 'Prêt à contrôler', 'certif-ephoto-control' ),
 			'error'      => __( 'Erreur de traitement', 'certif-ephoto-control' ),
 			'accepted'   => __( 'Transmis', 'certif-ephoto-control' ),
-			'rejected'   => __( 'Refusé', 'certif-ephoto-control' ),
+			'rejected'   => __( 'Refusé · attente client', 'certif-ephoto-control' ),
 			'missing'    => __( 'Introuvable sur le service', 'certif-ephoto-control' ),
 		);
 	}
@@ -134,7 +134,6 @@ class Certif_Ephoto_Admin {
 					'loading'           => __( 'Chargement...', 'certif-ephoto-control' ),
 					'sending'           => __( 'Envoi en cours...', 'certif-ephoto-control' ),
 					'confirmAccept'     => __( 'Confirmer la validation du dossier et sa transmission à Make / ePhoto ?', 'certif-ephoto-control' ),
-					'rejectPrompt'      => __( 'Motif du refus (obligatoire) :', 'certif-ephoto-control' ),
 					'rejectEmpty'       => __( 'Le motif du refus est obligatoire.', 'certif-ephoto-control' ),
 					'errorOccurred'     => __( 'Une erreur est survenue.', 'certif-ephoto-control' ),
 					'sessionExpired'    => __( 'Session expirée ou accès refusé : rechargez la page.', 'certif-ephoto-control' ),
@@ -156,6 +155,14 @@ class Certif_Ephoto_Admin {
 					'checkUnknown'      => __( '— À vérifier', 'certif-ephoto-control' ),
 					'noChecks'          => __( 'Aucun contrôle disponible.', 'certif-ephoto-control' ),
 					'invalidAngle'      => __( 'Angle invalide (entre -360 et 360).', 'certif-ephoto-control' ),
+					'linkCopied'        => __( 'Lien copié.', 'certif-ephoto-control' ),
+					'copyLink'          => __( 'Copier le lien', 'certif-ephoto-control' ),
+					'correctionLinkLabel' => __( 'Lien de correction du client :', 'certif-ephoto-control' ),
+					'copyFailed'        => __( 'Copie impossible : sélectionnez le lien et copiez-le.', 'certif-ephoto-control' ),
+					'correctionRound'   => __( 'Correction n° %d du client', 'certif-ephoto-control' ),
+					'correctionPending' => __( 'Le client a renvoyé ses fichiers le %s : nouvelle analyse en attente.', 'certif-ephoto-control' ),
+					'emailWithLink'     => __( 'Le client recevra un e-mail avec un lien personnel pour renvoyer uniquement ce qui est demandé, sans repasser commande.', 'certif-ephoto-control' ),
+					'emailNoLink'       => __( 'Le client recevra l’e-mail de correction avec le lien générique (aucune page de correction choisie dans les réglages).', 'certif-ephoto-control' ),
 				),
 			)
 		);
@@ -224,22 +231,26 @@ class Certif_Ephoto_Admin {
 					$status = 'processing';
 				}
 
+				// A refused dossier whose customer has sent a correction is work again,
+				// even before its new analysis has started.
+				$bucket = ( 'rejected' === $status && Certif_Ephoto_Correction::has_unprocessed_correction( $order ) ) ? 'open' : $status;
+
 				$count_all++;
-				if ( 'accepted' === $status ) {
+				if ( 'accepted' === $bucket ) {
 					$count_accepted++;
-				} elseif ( 'rejected' === $status ) {
+				} elseif ( 'rejected' === $bucket ) {
 					$count_rejected++;
 				} else {
 					$count_open++;
 				}
 
-				if ( 'open' === $current_tab && ( 'accepted' === $status || 'rejected' === $status ) ) {
+				if ( 'open' === $current_tab && ( 'accepted' === $bucket || 'rejected' === $bucket ) ) {
 					continue;
 				}
-				if ( 'accepted' === $current_tab && 'accepted' !== $status ) {
+				if ( 'accepted' === $current_tab && 'accepted' !== $bucket ) {
 					continue;
 				}
-				if ( 'rejected' === $current_tab && 'rejected' !== $status ) {
+				if ( 'rejected' === $current_tab && 'rejected' !== $bucket ) {
 					continue;
 				}
 
@@ -298,7 +309,7 @@ class Certif_Ephoto_Admin {
 						<span class="stat-indicator red"></span>
 					</div>
 					<div class="stat-number"><?php echo esc_html( $count_rejected ); ?></div>
-					<div class="stat-desc"><?php esc_html_e( 'Exceptions ou photos non conformes', 'certif-ephoto-control' ); ?></div>
+					<div class="stat-desc"><?php esc_html_e( 'En attente des fichiers corrigés du client', 'certif-ephoto-control' ); ?></div>
 				</a>
 
 				<a href="<?php echo esc_url( add_query_arg( 'tab', 'all', $base_url ) ); ?>"
@@ -400,6 +411,7 @@ class Certif_Ephoto_Admin {
 
 									<td class="col-status">
 										<span class="badge-status <?php echo esc_attr( $st ); ?>"><?php echo esc_html( self::status_label( $st ) ); ?></span>
+										<?php self::render_row_context( $order, $st ); ?>
 									</td>
 
 									<td class="col-actions" style="text-align:right;">
@@ -549,6 +561,18 @@ class Certif_Ephoto_Admin {
 							</div>
 						</div>
 					</div>
+
+					<form id="certif-reject-panel" class="certif-reject-panel" hidden>
+						<label for="certif-reject-reason" class="certif-reject-title"><?php esc_html_e( 'Motif du refus, tel que le client le lira', 'certif-ephoto-control' ); ?></label>
+						<div id="certif-reject-suggestions" class="certif-reject-suggestions" aria-label="<?php esc_attr_e( 'Motifs suggérés à partir des contrôles en échec', 'certif-ephoto-control' ); ?>"></div>
+						<textarea id="certif-reject-reason" rows="3" maxlength="1000" required
+							placeholder="<?php esc_attr_e( 'Ex. : le fond derrière vous n’est pas uni. Reprenez la photo devant un mur clair, sans ombre.', 'certif-ephoto-control' ); ?>"></textarea>
+						<p id="certif-reject-email-note" class="certif-reject-note"></p>
+						<div class="certif-reject-actions">
+							<button type="button" id="btn-reject-cancel" class="button"><?php esc_html_e( 'Annuler', 'certif-ephoto-control' ); ?></button>
+							<button type="submit" id="btn-reject-confirm" class="button button-primary certif-button-danger"><?php esc_html_e( 'Refuser et prévenir le client', 'certif-ephoto-control' ); ?></button>
+						</div>
+					</form>
 
 					<footer class="certif-modal-footer">
 						<div class="footer-left">
@@ -738,7 +762,42 @@ class Certif_Ephoto_Admin {
 				'files'           => $files,
 				'accept_ready'    => isset( $sub['accept_ready'] ) && true === $sub['accept_ready'],
 			),
+			'correction'   => array(
+				'enabled'      => Certif_Ephoto_Correction::enabled(),
+				'link'         => 'rejected' === $status ? Certif_Ephoto_Correction::link( $order ) : '',
+				'round'        => Certif_Ephoto_Correction::round_of( $order ),
+				'corrected_at' => (string) $order->get_meta( '_certif_ephoto_corrected_at' ),
+				'pending'      => Certif_Ephoto_Correction::has_unprocessed_correction( $order ),
+			),
 		);
+	}
+
+	/**
+	 * Second line of the status cell: why the dossier waits, and on whom.
+	 */
+	private static function render_row_context( $order, $status ) {
+		$round = Certif_Ephoto_Correction::round_of( $order );
+		if ( Certif_Ephoto_Correction::has_unprocessed_correction( $order ) ) {
+			echo '<span class="certif-chip chip-info">' . esc_html__( 'Correction reçue · analyse en attente', 'certif-ephoto-control' ) . '</span>';
+			return;
+		}
+		if ( 'rejected' === $status ) {
+			$reason  = (string) $order->get_meta( '_certif_ephoto_reason' );
+			$decided = (string) $order->get_meta( '_certif_ephoto_decided_at' );
+			$stamp   = '' !== $decided ? strtotime( $decided ) : false;
+			if ( '' !== $reason ) {
+				echo '<span class="certif-row-reason" title="' . esc_attr( $reason ) . '">« ' . esc_html( wp_html_excerpt( $reason, 70, '…' ) ) . ' »</span>';
+			}
+			if ( $stamp ) {
+				/* translators: %s: time since the refusal, e.g. "2 jours" */
+				echo '<span class="certif-row-meta">' . esc_html( sprintf( __( 'En attente depuis %s', 'certif-ephoto-control' ), human_time_diff( $stamp, time() ) ) ) . '</span>';
+			}
+			return;
+		}
+		if ( $round > 0 && in_array( $status, array( 'processing', 'pending', 'error' ), true ) ) {
+			/* translators: %d: correction number */
+			echo '<span class="certif-chip chip-correction">' . esc_html( sprintf( __( 'Correction n° %d', 'certif-ephoto-control' ), $round ) ) . '</span>';
+		}
 	}
 
 	/**
@@ -923,10 +982,15 @@ class Certif_Ephoto_Admin {
 			);
 		}
 
-		$result = Certif_Ephoto_Client::validate( $sub_id, $action, $reason );
+		$correction_link = 'reject' === $action ? Certif_Ephoto_Correction::link( $order ) : '';
+		$result          = Certif_Ephoto_Client::validate( $sub_id, $action, $reason, $correction_link );
 		if ( is_wp_error( $result ) ) {
 			// 409 (already decided / transmission in progress): resync before reporting.
 			self::send_service_error( $order, $sub_id, $result );
+		}
+		if ( 'reject' === $action ) {
+			// What the customer must fix, for the correction page; saved by apply_decision().
+			Certif_Ephoto_Correction::remember_refusal( $order, $current );
 		}
 
 		$new_status = ( isset( $result['status'] ) && in_array( $result['status'], array( 'accepted', 'rejected' ), true ) )

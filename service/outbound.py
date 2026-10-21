@@ -83,7 +83,26 @@ def _failed_labels(report: dict) -> list[str]:
     return [str(check.get("label", "")) for check in report.get("checks", []) if check.get("status") == "fail"]
 
 
-def build_rejection(record: dict, reviewer: str) -> dict:
+def _origin(url: str) -> tuple[str, str]:
+    parts = urlsplit(url)
+    return parts.scheme.lower(), (parts.hostname or "").lower().rstrip(".")
+
+
+def correction_link(candidate: str) -> str:
+    """The customer's personal correction link, or the generic page when it is unusable.
+
+    The WordPress plugin signs a link that opens the upload form for this exact order.
+    It goes into an email sent to the customer, so only a link on the same site as
+    CORRECTION_URL is kept: a caller cannot slip a phishing address into the email.
+    """
+    candidate = (candidate or "").strip()
+    if candidate and len(candidate) <= 2048 and _origin(candidate) == _origin(settings.correction_url) \
+            and _origin(candidate)[0] == "https":
+        return candidate
+    return settings.correction_url
+
+
+def build_rejection(record: dict, reviewer: str, correction_url: str = "") -> dict:
     """What the refusal email needs, and nothing else: no images leave on a refusal."""
     customer = record.get("customer") or {}
     name = customer.get("first_name") or customer.get("name") or ""
@@ -104,7 +123,7 @@ def build_rejection(record: dict, reviewer: str) -> dict:
             [f"• Photo : {label}" for label in photo_failures]
             + [f"• Signature : {label}" for label in signature_failures]
         ),
-        "correction_url": settings.correction_url,
+        "correction_url": correction_link(correction_url or str(customer.get("correction_url") or "")),
     }
 
 

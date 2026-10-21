@@ -26,6 +26,7 @@ if ( ! function_exists( 'certif_ephoto_uninstall_site' ) ) {
 			'certif_ephoto_auto_ingest',
 			'certif_ephoto_accepted_status',
 			'certif_ephoto_rejected_status',
+			'certif_ephoto_correction_page',
 			'certif_ephoto_photo_meta_key',
 			'certif_ephoto_sign_meta_key',
 			'certif_ephoto_db_version',

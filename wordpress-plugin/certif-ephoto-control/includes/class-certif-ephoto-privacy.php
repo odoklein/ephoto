@@ -47,6 +47,9 @@ class Certif_Ephoto_Privacy {
 			'_certif_ephoto_decided_at'    => __( 'Date de décision', 'certif-ephoto-control' ),
 			'_certif_ephoto_reason'        => __( 'Motif / note du contrôleur', 'certif-ephoto-control' ),
 			'_certif_ephoto_error'         => __( 'Erreur de traitement', 'certif-ephoto-control' ),
+			'_certif_ephoto_correction_photo_url'     => __( 'URL de la photo corrigée envoyée', 'certif-ephoto-control' ),
+			'_certif_ephoto_correction_signature_url' => __( 'URL de la signature corrigée envoyée', 'certif-ephoto-control' ),
+			'_certif_ephoto_corrected_at'             => __( 'Date de la correction', 'certif-ephoto-control' ),
 		);
 	}
 

@@ -49,17 +49,20 @@ class Certif_Ephoto_Order_Reader {
 		}
 		$email = trim( (string) $order->get_billing_email() );
 
-		$photo_url     = '';
-		$signature_url = '';
-		$items         = $order->get_items();
+		$items = $order->get_items();
+
+		// 0. Files the customer sent through the correction form replace the original
+		//    ones; a part they did not resend is read from the order as usual.
+		$photo_url     = self::clean_url( $order->get_meta( '_certif_ephoto_correction_photo_url' ) );
+		$signature_url = self::clean_url( $order->get_meta( '_certif_ephoto_correction_signature_url' ) );
 
 		// 1. Explicit override meta keys from the settings (item level, then order level).
 		$custom_photo_key = trim( (string) get_option( 'certif_ephoto_photo_meta_key', '' ) );
 		$custom_sign_key  = trim( (string) get_option( 'certif_ephoto_sign_meta_key', '' ) );
-		if ( '' !== $custom_photo_key ) {
+		if ( '' === $photo_url && '' !== $custom_photo_key ) {
 			$photo_url = self::find_explicit( $order, $items, $custom_photo_key );
 		}
-		if ( '' !== $custom_sign_key ) {
+		if ( '' === $signature_url && '' !== $custom_sign_key ) {
 			$signature_url = self::find_explicit( $order, $items, $custom_sign_key );
 		}
 

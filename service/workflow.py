@@ -186,6 +186,7 @@ def intake(
                 log.info("intake %s: duplicate of %s, not re-created", reference or "-", existing["id"])
                 return existing, False
         submission_id = secrets.token_hex(8)
+        previous = database.latest_with_reference(path, reference, (database.REJECTED,)) if reference else None
         database.create(path, submission_id, reference, customer, print_)
     try:
         for kind, source, fallback in (("photo_original", photo, ".jpg"), ("signature_original", signature, ".png")):
@@ -197,6 +198,12 @@ def intake(
         raise WorkflowError(500, "Enregistrement des fichiers impossible.") from error
     database.log_event(path, submission_id, "received", actor, source_ref=reference,
                        photo_bytes=len(photo.data), signature_bytes=len(signature.data))
+    if previous is not None:
+        # The customer's corrected files: both histories say so, and the reviewer can
+        # open the refusal that asked for them.
+        database.log_event(path, submission_id, "correction_received", actor, previous_id=previous["id"],
+                           previous_note=previous["reviewer_note"])
+        database.log_event(path, previous["id"], "corrected_by", actor, next_id=submission_id)
     log.info("intake %s: received (ref %s, by %s)", submission_id, reference or "-", actor)
     return database.get(path, submission_id), True
 
@@ -331,8 +338,12 @@ def rotate_signature(submission_id: str, rotation: int, reviewer: str) -> Proces
 
 
 # ── Decision ────────────────────────────────────────────────────────────────────────
-def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
-    """Accept (and transmit) or reject a submission; returns the updated record."""
+def decide(submission_id: str, action: str, reviewer: str, note: str, correction_url: str = "") -> dict:
+    """Accept (and transmit) or reject a submission; returns the updated record.
+
+    `correction_url` is the customer's personal upload link, signed by the WordPress
+    plugin; on a refusal it replaces the generic page in the email when it is safe.
+    """
     path = settings.database_path
     action = (action or "").strip().lower()
     note = (note or "").strip()
@@ -356,7 +367,7 @@ def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
         rejected = load(submission_id)
         # The customer email goes out in the background: the refusal is recorded either
         # way, and the reviewer is not kept waiting on Make.
-        threading.Thread(target=_notify_rejection, args=(rejected, reviewer), daemon=True).start()
+        threading.Thread(target=_notify_rejection, args=(rejected, reviewer, correction_url), daemon=True).start()
         return rejected
 
     blocker = accept_blocker(record)
@@ -385,9 +396,9 @@ def decide(submission_id: str, action: str, reviewer: str, note: str) -> dict:
         database.release(path, submission_id)
 
 
-def _notify_rejection(record: dict, reviewer: str) -> None:
+def _notify_rejection(record: dict, reviewer: str, correction_url: str = "") -> None:
     try:
-        sent, result = outbound.notify_rejection(outbound.build_rejection(record, reviewer))
+        sent, result = outbound.notify_rejection(outbound.build_rejection(record, reviewer, correction_url))
     except Exception as error:  # noqa: BLE001 - logged and recorded, never raised
         sent, result = False, f"e-mail de refus non envoyé ({type(error).__name__})"
     database.log_event(settings.database_path, record["id"],

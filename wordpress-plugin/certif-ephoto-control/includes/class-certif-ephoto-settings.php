@@ -33,6 +33,7 @@ class Certif_Ephoto_Settings {
 			'certif_ephoto_rejected_status',
 			'certif_ephoto_photo_meta_key',
 			'certif_ephoto_sign_meta_key',
+			'certif_ephoto_correction_page',
 		);
 	}
 
@@ -67,6 +68,13 @@ class Certif_Ephoto_Settings {
 			if ( self::is_constant_defined( $option ) ) {
 				delete_option( $option );
 			}
+		}
+		// 2.2.0: a refusal used to set the order to « Échouée », which makes WooCommerce
+		// email the shop and, on recent versions, the customer, on top of the correction
+		// email. The old default moves to « Correction demandée », which sends nothing.
+		if ( version_compare( (string) get_option( 'certif_ephoto_db_version', '0' ), '2.2.0', '<' )
+			&& 'failed' === get_option( 'certif_ephoto_rejected_status', '' ) ) {
+			update_option( 'certif_ephoto_rejected_status', Certif_Ephoto_Correction::STATUS, false );
 		}
 		self::disable_autoload();
 		update_option( 'certif_ephoto_db_version', CERTIF_EPHOTO_VERSION, false );
@@ -164,7 +172,7 @@ class Certif_Ephoto_Settings {
 		$valid_statuses = self::order_status_slugs();
 		$status_options = array(
 			'certif_ephoto_accepted_status' => 'completed',
-			'certif_ephoto_rejected_status' => 'failed',
+			'certif_ephoto_rejected_status' => Certif_Ephoto_Correction::STATUS,
 		);
 		foreach ( $status_options as $option => $default ) {
 			$value = sanitize_key( self::post_string( $option ) );
@@ -179,6 +187,9 @@ class Certif_Ephoto_Settings {
 
 		update_option( 'certif_ephoto_photo_meta_key', sanitize_text_field( self::post_string( 'certif_ephoto_photo_meta_key' ) ), false );
 		update_option( 'certif_ephoto_sign_meta_key', sanitize_text_field( self::post_string( 'certif_ephoto_sign_meta_key' ) ), false );
+
+		$page_id = absint( self::post_string( 'certif_ephoto_correction_page' ) );
+		update_option( 'certif_ephoto_correction_page', ( $page_id && 'page' === get_post_type( $page_id ) ) ? $page_id : 0, false );
 
 		self::disable_autoload();
 
@@ -249,7 +260,8 @@ class Certif_Ephoto_Settings {
 		$url_rejected    = '' !== $configured_url && ! Certif_Ephoto_Client::is_allowed_service_url( $configured_url );
 		$auto_ingest     = get_option( 'certif_ephoto_auto_ingest', 'yes' );
 		$accepted_status = get_option( 'certif_ephoto_accepted_status', 'completed' );
-		$rejected_status = get_option( 'certif_ephoto_rejected_status', 'failed' );
+		$rejected_status = get_option( 'certif_ephoto_rejected_status', Certif_Ephoto_Correction::STATUS );
+		$correction_page = absint( get_option( 'certif_ephoto_correction_page', 0 ) );
 		$photo_key       = get_option( 'certif_ephoto_photo_meta_key', '' );
 		$sign_key        = get_option( 'certif_ephoto_sign_meta_key', '' );
 		$statuses        = function_exists( 'wc_get_order_statuses' ) ? wc_get_order_statuses() : array();
@@ -408,7 +420,31 @@ class Certif_Ephoto_Settings {
 									</option>
 								<?php endforeach; ?>
 							</select>
-							<p class="description"><?php esc_html_e( 'Statut appliqué si le dossier est refusé (ex. Échouée / failed ou En attente / on-hold).', 'certif-ephoto-control' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Recommandé : Correction demandée. WooCommerce n’envoie aucun e-mail pour ce statut ; « Échouée » envoie un e-mail à la boutique et, selon la version, au client, en plus de l’e-mail de correction.', 'certif-ephoto-control' ); ?></p>
+							<?php if ( 'failed' === $rejected_status ) : ?>
+								<p class="description" style="color:#b45309;font-weight:600;"><?php esc_html_e( '« Échouée » déclenche des e-mails WooCommerce supplémentaires à chaque refus.', 'certif-ephoto-control' ); ?></p>
+							<?php endif; ?>
+						</td>
+					</tr>
+
+					<tr>
+						<th scope="row"><label for="certif_ephoto_correction_page"><?php esc_html_e( 'Page de correction client', 'certif-ephoto-control' ); ?></label></th>
+						<td>
+							<?php
+							wp_dropdown_pages(
+								array(
+									'name'              => 'certif_ephoto_correction_page',
+									'id'                => 'certif_ephoto_correction_page',
+									'selected'          => $correction_page,
+									'show_option_none'  => esc_html__( '— Aucune (lien générique) —', 'certif-ephoto-control' ),
+									'option_none_value' => '0',
+								)
+							);
+							?>
+							<p class="description"><?php esc_html_e( 'Page vers laquelle pointe le lien personnel de l’e-mail de refus (ex. « Correction de votre commande »). Ouverte avec ce lien, elle affiche à la place de son contenu un formulaire limité à la commande refusée : le client renvoie seulement la photo et/ou la signature, sans repasser commande. Les fichiers sont rattachés à la commande d’origine et l’analyse est relancée automatiquement. Vous pouvez aussi placer le shortcode [certif_ephoto_correction] dans une page.', 'certif-ephoto-control' ); ?></p>
+							<?php if ( $correction_page ) : ?>
+								<p class="description"><?php esc_html_e( 'Dans Make, le scénario de refus utilise déjà le champ correction_url : il reçoit désormais ce lien personnel.', 'certif-ephoto-control' ); ?></p>
+							<?php endif; ?>
 						</td>
 					</tr>
 

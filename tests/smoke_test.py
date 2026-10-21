@@ -366,8 +366,10 @@ def main() -> int:
         )
         check("motif obligatoire pour un refus", missing_reason.status_code == 422)
 
+        personal_link = "https://certif-idphoto.fr/correction-de-votre-commande/?certif_correction=42&k=abc123"
         rejected = client.post(f"/api/v1/validate/{second}", auth=auth,
-                               json={"action": "reject", "reason": "photo floue", "reviewer": "mallory"})
+                               json={"action": "reject", "reason": "photo floue", "reviewer": "mallory",
+                                     "correction_url": personal_link})
         check("refus enregistré", rejected.status_code == 200 and rejected.json()["status"] == "rejected")
         check("le contrôleur ne peut pas signer au nom d'un autre",
               "mallory" not in client.get(f"/admin/submissions/{second}", auth=auth).text)
@@ -378,10 +380,24 @@ def main() -> int:
         check("e-mail de refus demandé à Make", notice.get("event") == "submission.rejected"
               and notice.get("order_id") == "WC-10246" and notice.get("reason") == "photo floue"
               and notice.get("customer", {}).get("email") == "leo@example.fr"
-              and notice.get("correction_url", "").startswith("https://certif-idphoto.fr/"), json.dumps(notice)[:300])
+              and notice.get("correction_url") == personal_link, json.dumps(notice)[:300])
         check("aucune image dans l'avis de refus", "photo" not in notice and "signature" not in notice)
         check("aucun envoi après refus", len(received) == 1)
         check("vue des refusés", second in client.get("/admin/dashboard?show=rejected", auth=auth).text)
+
+        corrected = client.post(
+            "/api/v1/ingest", headers=api_key,
+            files={"photo": ("face.png", photo_bytes, "image/png"),
+                   "signature": ("sig.png", signature_bytes, "image/png")},
+            data={"order_id": "WC-10246"},
+        )
+        third = corrected.json().get("submission_id", "")
+        check("correction : nouveau dossier", corrected.status_code == 202 and third not in ("", second),
+              corrected.text[:200])
+        page = client.get(f"/admin/submissions/{third}", auth=auth).text
+        check("correction reliée au dossier refusé", "Correction du client reçue" in page and second[:8] in page)
+        check("dossier refusé relié à sa correction",
+              third[:8] in client.get(f"/admin/submissions/{second}", auth=auth).text)
 
         # Manual creation from the panel: same pipelines, but processed inline
         check("formulaire manuel protégé", client.get("/admin/nouveau").status_code == 401)
@@ -436,8 +452,15 @@ def main() -> int:
         check("aucun envoi pendant le traitement", len(received) == 1)
         storage.write(settings.storage_dir, ghost, "photo_original", photo_bytes, ".png")
         storage.write(settings.storage_dir, ghost, "signature_original", signature_bytes, ".png")
-        client.post(f"/api/v1/validate/{ghost}", json={"action": "reject", "reason": "doublon"}, headers=review_key)
+        client.post(f"/api/v1/validate/{ghost}", headers=review_key,
+                    json={"action": "reject", "reason": "doublon", "correction_url": "https://evil.example/phish"})
         workflow.process(ghost)
+        deadline = time.monotonic() + 10
+        while len(rejections) < 2 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        check("lien de correction d'un autre site ignoré",
+              len(rejections) >= 2 and rejections[-1]["json"].get("correction_url") == settings.correction_url,
+              json.dumps(rejections[-1]["json"] if rejections else {})[:300])
         check("un refus pendant le traitement n'est pas annulé",
               database.get(settings.database_path, ghost)["status"] == "rejected")
         check("décision API attribuée au contrôleur délégué",

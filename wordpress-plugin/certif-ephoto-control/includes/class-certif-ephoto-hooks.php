@@ -190,6 +190,9 @@ class Certif_Ephoto_Hooks {
 			$status = 'processing';
 		}
 
+		if ( 'rejected' === $status && Certif_Ephoto_Correction::has_unprocessed_correction( $order ) ) {
+			$status = 'processing'; // The customer's files are in: shown as work, not as waiting.
+		}
 		$label = Certif_Ephoto_Admin::status_label( $status );
 		if ( current_user_can( Certif_Ephoto_Admin::capability() ) ) {
 			echo '<a href="' . esc_url( Certif_Ephoto_Admin::review_url( $order->get_id() ) ) . '" style="' . esc_attr( self::badge_style( $status ) ) . '">' . esc_html( $label ) . '</a>';

@@ -38,6 +38,13 @@ class Certif_Ephoto_Client {
 			'_certif_ephoto_decided_at',
 			'_certif_ephoto_reviewer',
 			'_certif_ephoto_reason',
+			'_certif_ephoto_failures',
+			'_certif_ephoto_status_before_reject',
+			'_certif_ephoto_correction_photo_url',
+			'_certif_ephoto_correction_signature_url',
+			'_certif_ephoto_correction_round',
+			'_certif_ephoto_corrected_at',
+			'_certif_ephoto_correction_ingested_round',
 		);
 	}
 
@@ -516,9 +523,14 @@ class Certif_Ephoto_Client {
 
 		$payload = array(
 			'order_id'  => (string) $order->get_order_number(),
-			'customer'  => array(
-				'name'  => (string) $extracted['customer']['name'],
-				'email' => (string) $extracted['customer']['email'],
+			'customer'  => array_filter(
+				array(
+					'name'           => (string) $extracted['customer']['name'],
+					'email'          => (string) $extracted['customer']['email'],
+					// Personal link for the refusal email, also when the refusal is made
+					// from the service's own panel.
+					'correction_url' => Certif_Ephoto_Correction::link( $order ),
+				)
 			),
 			'photo'     => array( 'url' => $extracted['photo_url'] ),
 			'signature' => array( 'url' => $extracted['signature_url'] ),
@@ -560,9 +572,10 @@ class Certif_Ephoto_Client {
 
 		if ( $submission_id !== $existing ) {
 			// New dossier: forget the state of the previous one.
-			foreach ( array( '_certif_ephoto_status', '_certif_ephoto_error', '_certif_ephoto_forward_status', '_certif_ephoto_accept_ready', '_certif_ephoto_decided_at', '_certif_ephoto_reviewer', '_certif_ephoto_reason' ) as $meta_key ) {
+			foreach ( array( '_certif_ephoto_status', '_certif_ephoto_error', '_certif_ephoto_forward_status', '_certif_ephoto_accept_ready', '_certif_ephoto_decided_at', '_certif_ephoto_reviewer', '_certif_ephoto_reason', '_certif_ephoto_failures' ) as $meta_key ) {
 				$order->delete_meta_data( $meta_key );
 			}
+			Certif_Ephoto_Correction::mark_ingested( $order );
 		}
 		$order->update_meta_data( '_certif_ephoto_submission_id', $submission_id );
 		$order->update_meta_data( '_certif_ephoto_photo_url', $extracted['photo_url'] );
@@ -771,10 +784,11 @@ class Certif_Ephoto_Client {
 	 *
 	 * @param string $submission_id
 	 * @param string $action 'accept' or 'reject'.
-	 * @param string $reason Required for reject.
+	 * @param string $reason         Required for reject.
+	 * @param string $correction_url Customer's personal correction link (reject only).
 	 * @return array|WP_Error WP_Error data carries the HTTP status (409, 422, 502...).
 	 */
-	public static function validate( $submission_id, $action, $reason = '' ) {
+	public static function validate( $submission_id, $action, $reason = '', $correction_url = '' ) {
 		$submission_id = self::clean_submission_id( $submission_id );
 		if ( '' === $submission_id || ! in_array( $action, array( 'accept', 'reject' ), true ) ) {
 			return new WP_Error( 'invalid_request', __( 'Paramètres invalides.', 'certif-ephoto-control' ) );
@@ -787,9 +801,12 @@ class Certif_Ephoto_Client {
 				'timeout' => 45, // The service calls the Make webhook synchronously.
 				'headers' => array( 'Content-Type' => 'application/json' ),
 				'body'    => wp_json_encode(
-					array(
-						'action' => $action,
-						'reason' => (string) $reason,
+					array_filter(
+						array(
+							'action'         => $action,
+							'reason'         => (string) $reason,
+							'correction_url' => 'reject' === $action ? (string) $correction_url : '',
+						)
 					)
 				),
 			),
@@ -855,6 +872,9 @@ class Certif_Ephoto_Client {
 
 		if ( '' !== $status && $status !== $previous ) {
 			if ( 'accepted' === $status || 'rejected' === $status ) {
+				if ( 'rejected' === $status ) {
+					Certif_Ephoto_Correction::remember_refusal( $order, $data );
+				}
 				self::apply_decision(
 					$order,
 					$status,
@@ -923,7 +943,10 @@ class Certif_Ephoto_Client {
 				? __( '[Certif ID] Dossier accepté (état synchronisé depuis le service de contrôle).', 'certif-ephoto-control' )
 				: sprintf( __( '[Certif ID] Dossier accepté par %s et transmis à Make / ePhoto.', 'certif-ephoto-control' ), $reviewer_label );
 		} else {
-			$target      = (string) get_option( 'certif_ephoto_rejected_status', 'failed' );
+			// « Correction demandée » by default: WooCommerce sends no email for it,
+			// whereas « Échouée » emailed the shop and, on recent versions, the customer.
+			$target      = (string) get_option( 'certif_ephoto_rejected_status', Certif_Ephoto_Correction::STATUS );
+			Certif_Ephoto_Correction::remember_refusal( $order );
 			$status_note = sprintf( __( 'Dossier ePhoto refusé : %s', 'certif-ephoto-control' ), $reason_text );
 			$note        = $from_sync
 				? sprintf( __( '[Certif ID] Dossier refusé (état synchronisé depuis le service de contrôle). Motif : %s', 'certif-ephoto-control' ), $reason_text )
