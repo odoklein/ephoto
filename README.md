@@ -140,6 +140,10 @@ angle depuis la fiche ; le recalcul repart toujours de l'original.
 | `ADMIN_USER` / `ADMIN_PASSWORD` | — | **Obligatoires** : sans eux le panneau répond 503 |
 | `MAKE_WEBHOOK_URL` | — | Webhook de sortie (HTTPS) ; sans lui l'acceptation est indisponible |
 | `MAKE_WEBHOOK_TOKEN` | — | Envoyé en `Authorization: Bearer …` — à vérifier dans le scénario B |
+| `MAKE_REJECT_WEBHOOK_URL` | — | Webhook Make appelé à chaque refus : e-mail de correction au client (scénario 4) |
+| `CORRECTION_URL` | page de correction certif-idphoto.fr | Lien du formulaire de correction placé dans cet e-mail |
+
+> Toute variable ajoutée dans Dokploy doit aussi figurer dans `docker-compose.yml` : seules les variables listées dans `environment:` sont transmises au conteneur.
 | `STORAGE_DIR` | `/data` (Docker) | Images et base SQLite |
 | `PURGE_AFTER_DAYS` | `30` | Purge des dossiers décidés (RGPD) |
 | `PURGE_OPEN_AFTER_DAYS` | `0` (jamais) | Purge des dossiers jamais décidés |
